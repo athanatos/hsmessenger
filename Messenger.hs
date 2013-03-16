@@ -26,6 +26,8 @@ data Messenger t a =
   ,perChannelMax :: Int
   }
 
+mkMessenger Transport m => m
+
 deliverMessage :: T.Transport t => Serialize a =>
                   Messenger t a -> T.Connection t -> BS.ByteString -> IO ()
 deliverMessage messenger conn message = atomically $ do
