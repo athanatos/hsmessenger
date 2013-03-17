@@ -13,7 +13,7 @@ module Transport ( ConnException
                  ) where
 
 import Data.Int
-import Data.ByteString
+import Data.ByteString.Lazy
 
 data ConnException  = Closed | Reset
 
@@ -26,8 +26,9 @@ class Transport m where
     Entity m ->
     (m -> Connection m -> ByteString -> Maybe (IO ())) ->
     (m -> Connection m -> ConnException -> Maybe (IO ())) ->
-    m
+    IO m
   startTransport :: m -> IO ()
   getConnection :: m -> Entity m -> IO (Connection m)
   queueMessage  :: m -> Connection m -> ByteString -> IO ()
   getEntity :: m -> Connection m -> Entity m
+  bind :: m -> IO ()

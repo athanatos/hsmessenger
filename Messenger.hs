@@ -4,7 +4,7 @@ module Messenger (
 
 import Data.Serialize
 import Data.Maybe
-import qualified Data.ByteString as BS
+import qualified Data.ByteString.Lazy as BS
 import qualified Transport as T
 import qualified Channel as C
 import Control.Monad.State
@@ -22,9 +22,6 @@ import Channel
 data Messenger t a =
   Messenger
   { getTransport :: t
-  , mActions :: [(Messenger t a -> T.Connection t -> a -> Maybe (IO ()))]
-  , eActions :: [(Messenger t a -> T.Connection t ->
-                  T.ConnException -> Maybe (IO ()))]
   }
 
 makeMessenger :: T.Transport t => Serialize a =>
@@ -42,27 +39,26 @@ makeMessenger addr _mActions _eActions =
 
     collapse ms trans conn bs = firstJust [x trans conn bs | x <- ms]
 
-    decodify msgr x = \_ conn bs -> case decode bs of
+    decodify x = \t conn bs -> case decodeLazy bs of
       Left _ -> Nothing
-      Right msg -> x msgr conn msg
+      Right msg -> x (Messenger { getTransport = t }) conn msg
 
-    eActions msgr = collapse $ [\_ -> y msgr | y <- _eActions]
-    mActions msgr = collapse $ map (decodify msgr) _mActions
-
-    msger = Messenger { getTransport =
-                           T.makeTransport addr (mActions msger) (eActions msger)
-                      , mActions = _mActions
-                      , eActions = _eActions
-                      }
+    eActions = collapse $
+               [\t -> y (Messenger { getTransport = t }) | y <- _eActions]
+    mActions = collapse $ map decodify _mActions
   in
    do
-     T.startTransport $ getTransport msger
-     return msger
-     
+     trans <- T.makeTransport addr mActions eActions
+     T.startTransport trans
+     return $ Messenger { getTransport = trans }
+
+bind :: T.Transport t => Serialize a => Messenger t a -> IO ()
+bind msgr = do
+  T.bind (getTransport msgr)
 
 queueMessage :: T.Transport t => Serialize a =>
                 Messenger t a -> T.Connection t -> a -> IO ()
 queueMessage messenger conn message =
-  T.queueMessage (getTransport messenger) conn (encode message)
+  T.queueMessage (getTransport messenger) conn (encodeLazy message)
 
 
