@@ -28,11 +28,12 @@ data Messenger t a =
   }
 
 makeMessenger :: T.Transport t => Serialize a =>
+                 T.Entity t ->
                  [(Messenger t a -> T.Connection t -> a -> Maybe (IO ()))] ->
                  [(Messenger t a -> T.Connection t ->
                    T.ConnException -> Maybe (IO ()))] ->
                  IO (Messenger t a)
-makeMessenger _mActions _eActions = 
+makeMessenger addr _mActions _eActions = 
   let
     firstJust [] = Nothing
     firstJust (x:xs) = case x of
@@ -49,7 +50,7 @@ makeMessenger _mActions _eActions =
     mActions msgr = collapse $ map (decodify msgr) _mActions
 
     msger = Messenger { getTransport =
-                           T.makeTransport (mActions msger) (eActions msger)
+                           T.makeTransport addr (mActions msger) (eActions msger)
                       , mActions = _mActions
                       , eActions = _eActions
                       }

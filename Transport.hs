@@ -9,7 +9,7 @@ module Transport ( ConnException
                  , getConnection
                  , queueMessage
                  , ConnID
-                 , getConnID
+                 , getEntity
                  ) where
 
 import Data.Int
@@ -23,10 +23,11 @@ class Transport m where
   type Entity m :: *
   type Connection m :: *
   makeTransport ::
+    Entity m ->
     (m -> Connection m -> ByteString -> Maybe (IO ())) ->
     (m -> Connection m -> ConnException -> Maybe (IO ())) ->
     m
   startTransport :: m -> IO ()
   getConnection :: m -> Entity m -> IO (Connection m)
   queueMessage  :: m -> Connection m -> ByteString -> IO ()
-  getConnID :: m -> Connection m -> ConnID
+  getEntity :: m -> Connection m -> Entity m
