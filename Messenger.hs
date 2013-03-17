@@ -21,25 +21,43 @@ import Channel
 -- Messenger
 data Messenger t a =
   Messenger
-  {getTransport :: t
-  ,channelMap :: TVar (M.Map T.ConnID (Channel a))
-  ,perChannelMax :: Int
+  { getTransport :: t
+  , mActions :: [(Messenger t a -> T.Connection t -> a -> Maybe (IO ()))]
+  , eActions :: [(Messenger t a -> T.Connection t ->
+                  T.ConnException -> Maybe (IO ()))]
   }
 
-mkMessenger Transport m => m
+makeMessenger :: T.Transport t => Serialize a =>
+                 [(Messenger t a -> T.Connection t -> a -> Maybe (IO ()))] ->
+                 [(Messenger t a -> T.Connection t ->
+                   T.ConnException -> Maybe (IO ()))] ->
+                 IO (Messenger t a)
+makeMessenger _mActions _eActions = 
+  let
+    firstJust [] = Nothing
+    firstJust (x:xs) = case x of
+      Just x -> Just x
+      Nothing -> firstJust xs
 
-deliverMessage :: T.Transport t => Serialize a =>
-                  Messenger t a -> T.Connection t -> BS.ByteString -> IO ()
-deliverMessage messenger conn message = atomically $ do
-  cmap <- readTVar $ channelMap messenger
-  fromMaybe (return ()) $ do
-    chan' <- M.lookup (T.getConnID (getTransport messenger) conn) cmap
-    decoded <- eitherToMaybe $ decode message
-    return $ C.putItem chan' decoded (BS.length message)
-  where
-    eitherToMaybe x = case x of
+    collapse ms trans conn bs = firstJust [x trans conn bs | x <- ms]
+
+    decodify msgr x = \_ conn bs -> case decode bs of
       Left _ -> Nothing
-      Right x -> Just x
+      Right msg -> x msgr conn msg
+
+    eActions msgr = collapse $ [\_ -> y msgr | y <- _eActions]
+    mActions msgr = collapse $ map (decodify msgr) _mActions
+
+    msger = Messenger { getTransport =
+                           T.makeTransport (mActions msger) (eActions msger)
+                      , mActions = _mActions
+                      , eActions = _eActions
+                      }
+  in
+   do
+     T.startTransport $ getTransport msger
+     return msger
+     
 
 queueMessage :: T.Transport t => Serialize a =>
                 Messenger t a -> T.Connection t -> a -> IO ()

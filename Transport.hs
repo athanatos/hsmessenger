@@ -1,13 +1,15 @@
 {-# LANGUAGE TypeFamilies #-}
 -- Messenger abstraction
-module Transport (ConnException
-                 ,Transport
-                 ,Connection
-                 ,Entity
-                 ,getConnection
-                 ,queueMessage
-                 ,ConnID
-                 ,getConnID
+module Transport ( ConnException
+                 , Transport
+                 , Connection
+                 , Entity
+                 , makeTransport
+                 , startTransport
+                 , getConnection
+                 , queueMessage
+                 , ConnID
+                 , getConnID
                  ) where
 
 import Data.Int
@@ -20,10 +22,10 @@ type ConnID = Int64
 class Transport m where
   type Entity m :: *
   type Connection m :: *
-  registerCallbacks::
-    [(m -> ByteString -> Maybe (IO ()))] ->
-    [(m -> Connection m -> ConnException -> Maybe (IO ()))] ->
-    IO ()
+  makeTransport ::
+    (m -> Connection m -> ByteString -> Maybe (IO ())) ->
+    (m -> Connection m -> ConnException -> Maybe (IO ())) ->
+    m
   startTransport :: m -> IO ()
   getConnection :: m -> Entity m -> IO (Connection m)
   queueMessage  :: m -> Connection m -> ByteString -> IO ()
