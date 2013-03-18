@@ -25,6 +25,18 @@ data Entity =
          }
   deriving Eq
 
+makeTuple :: Entity ->
+             (Int, S.PortNumber, S.FlowInfo,
+              S.HostAddress, S.HostAddress6, S.ScopeID,
+              String)
+makeTuple = (\x -> case x of
+  S.SockAddrInet a b -> (0, a, 0, b, (0,0,0,0), 0, "")
+  S.SockAddrInet6 a b c d -> (1, a, b, 0, c, d, "")
+  S.SockAddrUnix e -> (2, S.PortNum 0, 0, 0, (0,0,0,0), 0, e)) . entityAddr
+
+instance Ord Entity where
+  compare a b = compare (makeTuple a) (makeTuple b)
+
 data Status = Open | Closed
 data TCPConnection =
   TCPConnection { connStatus :: STM.TVar Status
