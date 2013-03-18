@@ -8,8 +8,10 @@ module Transport ( ConnException
                  , startTransport
                  , getConnection
                  , queueMessage
+                 , queueMessageEntity
                  , ConnID
                  , getEntity
+                 , bind
                  ) where
 
 import Data.Int
@@ -30,5 +32,6 @@ class Transport m where
   startTransport :: m -> IO ()
   getConnection :: m -> Entity m -> IO (Connection m)
   queueMessage  :: m -> Connection m -> ByteString -> IO ()
+  queueMessageEntity  :: m -> Entity m -> ByteString -> IO ()
   getEntity :: m -> Connection m -> Entity m
   bind :: m -> IO ()

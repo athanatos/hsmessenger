@@ -161,3 +161,11 @@ bindTransport :: TCPTransport -> IO ()
 bindTransport trans = do
   forkIO $ accepter trans
   return ()
+
+queueMessage :: TCPTransport -> TCPConnection -> ByteString -> IO ()
+queueMessage trans conn msg = do
+  STM.atomically $ queueOnConnection conn msg
+
+queueMessageEntity :: TCPTransport -> Entity -> ByteString -> IO ()
+queueMessageEntity trans entity msg = atomicall $ do
+  STM.

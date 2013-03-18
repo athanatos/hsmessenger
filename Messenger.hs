@@ -56,9 +56,14 @@ bind :: T.Transport t => Serialize a => Messenger t a -> IO ()
 bind msgr = do
   T.bind (getTransport msgr)
 
-queueMessage :: T.Transport t => Serialize a =>
-                Messenger t a -> T.Connection t -> a -> IO ()
-queueMessage messenger conn message =
+queueMessageEntity :: T.Transport t => Serialize a => 
+                      Messenger t a -> T.Entity t -> a -> IO ()
+queueMessageEntity msger entity msg = do
+  T.queueMessageEntity (getTransport msger) entity (encodeLazy msg)
+
+queueMessageConn :: T.Transport t => Serialize a =>
+                    Messenger t a -> T.Connection t -> a -> IO ()
+queueMessageConn messenger conn message =
   T.queueMessage (getTransport messenger) conn (encodeLazy message)
 
 
