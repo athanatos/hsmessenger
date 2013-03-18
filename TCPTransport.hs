@@ -15,6 +15,7 @@ import qualified Data.Binary.Put as BP
 import qualified Data.Binary.Get as BG
 import qualified Control.Exception as CE
 import Control.Concurrent
+import Control.Concurrent.MVar
 import Control.Monad
 
 import qualified Channel as C
@@ -98,7 +99,7 @@ recvForever trans bs =
      Left (msg, rest) -> do
        recvForever trans rest
      Right ex -> return $ Just ex
-         
+
 sendForever :: TCPConnection -> IO (Maybe IOError)
 sendForever conn = do
   nextMsg <- STM.atomically $ C.getItem (connQueue conn)
@@ -109,6 +110,12 @@ sendForever conn = do
     Nothing -> sendForever conn
     Just err -> return $ Just err
 
+initConnection :: TCPTransport TCPConnection -> IO ()
+initConnection trans conn = do
+  forkIO $ sendForever conn
+  bs <- BSS.getContents $ connSocket conn
+  forkIO $ recvForever bs
+
 data TCPTransport =
   TCPTransport { selfAddr :: Entity
                , openConns :: STM.TVar (M.Map Entity TCPConnection)
@@ -116,6 +123,7 @@ data TCPTransport =
                              ByteString -> Maybe (IO ()))
                , eAction :: (TCPTransport -> TCPConnection ->
                              T.ConnException -> Maybe (IO ()))
+               , cachedSocket :: MVar S.Socket
                }
 
 sockAddr :: TCPTransport -> S.SockAddr
@@ -167,5 +175,23 @@ queueMessage trans conn msg = do
   STM.atomically $ queueOnConnection conn msg
 
 queueMessageEntity :: TCPTransport -> Entity -> ByteString -> IO ()
-queueMessageEntity trans entity msg = atomicall $ do
-  STM.
+queueMessageEntity trans entity msg = do
+  sock <- readMVar $ cachedSocket trans
+  queued <- STM.atomically $ do
+    conns <- STM.readTVar (openConns trans)
+    case lookup entity conns of
+      Just conn -> queueMessage trans conn msg >> return Nothing
+      Nothing -> do
+        conn <- makeConnection (sock, entityAddr entity)
+        STM.writeTVar
+          (openConns trans)
+          (M.insert entity conn conns)
+        return $ Just conn
+  case queued of
+    Nothing -> writeMVar (cachedSocket trans) sock
+    Just conn -> do
+      initConnection trans conn
+      socknew <- S.socket (family trans) S.Stream S.defaultProtocol
+      writeMVar (cachedSocket trans) sock
+      
+      
