@@ -15,7 +15,7 @@ import qualified Data.Binary.Put as BP
 import qualified Data.Binary.Get as BG
 import qualified Control.Exception as CE
 import Control.Concurrent
-import Control.Concurrent.MVar
+import qualified Control.Concurrent.MVar as CM
 import Control.Monad
 
 import qualified Channel as C
@@ -110,11 +110,12 @@ sendForever conn = do
     Nothing -> sendForever conn
     Just err -> return $ Just err
 
-initConnection :: TCPTransport TCPConnection -> IO ()
+initConnection :: TCPTransport -> TCPConnection -> IO ()
 initConnection trans conn = do
-  forkIO $ sendForever conn
+  forkIO $ sendForever conn >> return ()
   bs <- BSS.getContents $ connSocket conn
-  forkIO $ recvForever bs
+  forkIO $ recvForever trans bs >> return ()
+  return ()
 
 data TCPTransport =
   TCPTransport { selfAddr :: Entity
@@ -129,11 +130,14 @@ data TCPTransport =
 sockAddr :: TCPTransport -> S.SockAddr
 sockAddr = entityAddr . selfAddr
 
-family :: TCPTransport -> S.Family
-family trans = case (sockAddr trans) of
+familyEntity :: Entity -> S.Family
+familyEntity addr = case (entityAddr addr) of
   S.SockAddrInet _ _ -> S.AF_INET
   S.SockAddrInet6 _ _ _ _ -> S.AF_INET6
   S.SockAddrUnix _ -> S.AF_UNIX
+
+family :: TCPTransport -> S.Family
+family = familyEntity . selfAddr
 
 makeTransport :: Entity ->
                  (TCPTransport -> TCPConnection ->
@@ -143,10 +147,13 @@ makeTransport :: Entity ->
                  IO TCPTransport
 makeTransport addr mAction eAction = do
   oConns <- STM.atomically $ STM.newTVar M.empty
+  sock <- S.socket (familyEntity addr) S.Stream S.defaultProtocol
+  cVar <- CM.newMVar sock
   return $ TCPTransport { selfAddr = addr
                         , openConns = oConns
                         , mAction = mAction
                         , eAction = eAction
+                        , cachedSocket = cVar
                         }
 
 accepter :: TCPTransport -> IO ()
@@ -174,24 +181,48 @@ queueMessage :: TCPTransport -> TCPConnection -> ByteString -> IO ()
 queueMessage trans conn msg = do
   STM.atomically $ queueOnConnection conn msg
 
+getOrCreateConnection :: S.Socket -> TCPTransport -> Entity->
+                         STM.STM (Bool, TCPConnection)
+getOrCreateConnection sock trans addr = do
+  conns <- STM.readTVar (openConns trans)
+  case M.lookup addr conns of
+    Just conn -> return (False, conn)
+    Nothing -> do
+      newConn <- makeConnection (sock, entityAddr addr)
+      STM.writeTVar
+        (openConns trans)
+        (M.insert addr newConn conns)
+      return (True, newConn)
+
 queueMessageEntity :: TCPTransport -> Entity -> ByteString -> IO ()
 queueMessageEntity trans entity msg = do
-  sock <- readMVar $ cachedSocket trans
-  queued <- STM.atomically $ do
-    conns <- STM.readTVar (openConns trans)
-    case lookup entity conns of
-      Just conn -> queueMessage trans conn msg >> return Nothing
-      Nothing -> do
-        conn <- makeConnection (sock, entityAddr entity)
-        STM.writeTVar
-          (openConns trans)
-          (M.insert entity conn conns)
-        return $ Just conn
-  case queued of
-    Nothing -> writeMVar (cachedSocket trans) sock
-    Just conn -> do
+  sock <- CM.takeMVar $ cachedSocket trans
+  (created, conn) <- STM.atomically $ getOrCreateConnection sock trans entity
+  STM.atomically $ queueOnConnection conn msg
+  if not created
+    then CM.putMVar (cachedSocket trans) sock
+    else do
       initConnection trans conn
       socknew <- S.socket (family trans) S.Stream S.defaultProtocol
-      writeMVar (cachedSocket trans) sock
-      
-      
+      CM.putMVar (cachedSocket trans) sock
+
+getConnection :: TCPTransport -> Entity -> IO TCPConnection
+getConnection trans entity = do
+  sock <- CM.takeMVar $ cachedSocket trans
+  (created, conn) <- STM.atomically $ getOrCreateConnection sock trans entity
+  if created
+    then CM.putMVar (cachedSocket trans) sock >> return conn
+    else do
+      socknew <- S.socket (family trans) S.Stream S.defaultProtocol
+      CM.putMVar (cachedSocket trans) sock
+      return conn
+    
+instance T.Transport TCPTransport where
+  type Entity TCPTransport = Entity
+  type Connection TCPTransport = TCPConnection
+  makeTransport = makeTransport
+  startTransport = \x -> return ()
+  getConnection = getConnection
+  queueMessage = queueMessage
+  queueMessageEntity = queueMessageEntity
+  bind = bindTransport
