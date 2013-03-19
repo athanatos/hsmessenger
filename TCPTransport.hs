@@ -182,8 +182,7 @@ accepter trans = do
 
 bindTransport :: TCPTransport -> IO ()
 bindTransport trans = do
-  forkIO $ accepter trans
-  return ()
+  accepter trans
 
 queueMessage :: TCPTransport -> TCPConnection -> ByteString -> IO ()
 queueMessage trans conn msg = do
