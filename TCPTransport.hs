@@ -121,7 +121,7 @@ recvForever trans conn bs =
    case res of
      Left (msg, rest) -> do
        print $ "Got a message?, len " ++ (show (BS.length msg))
-       fromMaybe (return ()) $ (mAction trans) trans conn msg
+       forkIO $ fromMaybe (return ()) $ (mAction trans) trans conn msg
        recvForever trans conn rest
      Right ex -> print ex >> (return $ Just ex)
 
