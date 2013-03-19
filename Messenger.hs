@@ -1,5 +1,8 @@
 {-# LANGUAGE TypeFamilies #-}
-module Messenger (
+module Messenger ( makeMessenger
+                 , bind
+                 , queueMessageEntity
+                 , queueMessageConn
                  ) where
 
 import Data.Serialize

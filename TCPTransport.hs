@@ -1,5 +1,7 @@
 {-# LANGUAGE TypeFamilies #-}
-module TCPMessenger (
+module TCPMessenger ( TCPTransport
+                    , TCPEntity
+                    , TCPConnection
                     ) where
 
 import qualified Transport as T
@@ -21,12 +23,12 @@ import Control.Monad
 import qualified Channel as C
 
 -- TCPTransport
-data Entity =
-  Entity { entityAddr :: S.SockAddr
+data TCPEntity =
+  TCPEntity { entityAddr :: S.SockAddr
          }
   deriving Eq
 
-makeTuple :: Entity ->
+makeTuple :: TCPEntity ->
              (Int, S.PortNumber, S.FlowInfo,
               S.HostAddress, S.HostAddress6, S.ScopeID,
               String)
@@ -35,13 +37,13 @@ makeTuple = (\x -> case x of
   S.SockAddrInet6 a b c d -> (1, a, b, 0, c, d, "")
   S.SockAddrUnix e -> (2, S.PortNum 0, 0, 0, (0,0,0,0), 0, e)) . entityAddr
 
-instance Ord Entity where
+instance Ord TCPEntity where
   compare a b = compare (makeTuple a) (makeTuple b)
 
 data Status = Open | Closed
 data TCPConnection =
   TCPConnection { connStatus :: STM.TVar Status
-                , connPeer :: Entity
+                , connPeer :: TCPEntity
                 , connQueue :: C.Channel ByteString
                 , connSocket :: S.Socket
                 }
@@ -51,7 +53,7 @@ makeConnection (socket, addr) = do
   status <- STM.newTVar Open
   queue <- C.makeChannel 100
   return $ TCPConnection { connStatus = status
-                         , connPeer = Entity { entityAddr = addr }
+                         , connPeer = TCPEntity { entityAddr = addr }
                          , connQueue = queue
                          , connSocket = socket
                          }
@@ -118,8 +120,8 @@ initConnection trans conn = do
   return ()
 
 data TCPTransport =
-  TCPTransport { selfAddr :: Entity
-               , openConns :: STM.TVar (M.Map Entity TCPConnection)
+  TCPTransport { selfAddr :: TCPEntity
+               , openConns :: STM.TVar (M.Map TCPEntity TCPConnection)
                , mAction :: (TCPTransport -> TCPConnection ->
                              ByteString -> Maybe (IO ()))
                , eAction :: (TCPTransport -> TCPConnection ->
@@ -130,16 +132,16 @@ data TCPTransport =
 sockAddr :: TCPTransport -> S.SockAddr
 sockAddr = entityAddr . selfAddr
 
-familyEntity :: Entity -> S.Family
-familyEntity addr = case (entityAddr addr) of
+familyTCPEntity :: TCPEntity -> S.Family
+familyTCPEntity addr = case (entityAddr addr) of
   S.SockAddrInet _ _ -> S.AF_INET
   S.SockAddrInet6 _ _ _ _ -> S.AF_INET6
   S.SockAddrUnix _ -> S.AF_UNIX
 
 family :: TCPTransport -> S.Family
-family = familyEntity . selfAddr
+family = familyTCPEntity . selfAddr
 
-makeTransport :: Entity ->
+makeTransport :: TCPEntity ->
                  (TCPTransport -> TCPConnection ->
                   ByteString -> Maybe (IO ())) ->
                  (TCPTransport -> TCPConnection ->
@@ -147,7 +149,7 @@ makeTransport :: Entity ->
                  IO TCPTransport
 makeTransport addr mAction eAction = do
   oConns <- STM.atomically $ STM.newTVar M.empty
-  sock <- S.socket (familyEntity addr) S.Stream S.defaultProtocol
+  sock <- S.socket (familyTCPEntity addr) S.Stream S.defaultProtocol
   cVar <- CM.newMVar sock
   return $ TCPTransport { selfAddr = addr
                         , openConns = oConns
@@ -168,7 +170,7 @@ accepter trans = do
       map <- STM.readTVar $ openConns trans
       STM.writeTVar
         (openConns trans)
-        (M.insert (Entity { entityAddr = caddr} ) conn map)
+        (M.insert (TCPEntity { entityAddr = caddr} ) conn map)
       return conn
     return ()
 
@@ -181,7 +183,7 @@ queueMessage :: TCPTransport -> TCPConnection -> ByteString -> IO ()
 queueMessage trans conn msg = do
   STM.atomically $ queueOnConnection conn msg
 
-getOrCreateConnection :: S.Socket -> TCPTransport -> Entity->
+getOrCreateConnection :: S.Socket -> TCPTransport -> TCPEntity->
                          STM.STM (Bool, TCPConnection)
 getOrCreateConnection sock trans addr = do
   conns <- STM.readTVar (openConns trans)
@@ -194,8 +196,8 @@ getOrCreateConnection sock trans addr = do
         (M.insert addr newConn conns)
       return (True, newConn)
 
-queueMessageEntity :: TCPTransport -> Entity -> ByteString -> IO ()
-queueMessageEntity trans entity msg = do
+queueMessageTCPEntity :: TCPTransport -> TCPEntity -> ByteString -> IO ()
+queueMessageTCPEntity trans entity msg = do
   sock <- CM.takeMVar $ cachedSocket trans
   (created, conn) <- STM.atomically $ getOrCreateConnection sock trans entity
   STM.atomically $ queueOnConnection conn msg
@@ -206,7 +208,7 @@ queueMessageEntity trans entity msg = do
       socknew <- S.socket (family trans) S.Stream S.defaultProtocol
       CM.putMVar (cachedSocket trans) sock
 
-getConnection :: TCPTransport -> Entity -> IO TCPConnection
+getConnection :: TCPTransport -> TCPEntity -> IO TCPConnection
 getConnection trans entity = do
   sock <- CM.takeMVar $ cachedSocket trans
   (created, conn) <- STM.atomically $ getOrCreateConnection sock trans entity
@@ -218,11 +220,11 @@ getConnection trans entity = do
       return conn
     
 instance T.Transport TCPTransport where
-  type Entity TCPTransport = Entity
+  type Entity TCPTransport = TCPEntity
   type Connection TCPTransport = TCPConnection
   makeTransport = makeTransport
   startTransport = \x -> return ()
   getConnection = getConnection
   queueMessage = queueMessage
-  queueMessageEntity = queueMessageEntity
+  queueMessageEntity = queueMessageTCPEntity
   bind = bindTransport
