@@ -1,5 +1,6 @@
 {-# LANGUAGE TypeFamilies #-}
-module Messenger ( makeMessenger
+module Messenger ( Messenger
+                 , makeMessenger
                  , bind
                  , queueMessageEntity
                  , queueMessageConn
