@@ -17,6 +17,7 @@ import Data.Int
 import Data.ByteString.Lazy
 
 data ConnException  = Closed | Reset
+                    deriving Show
 
 type ConnID = Int64
 

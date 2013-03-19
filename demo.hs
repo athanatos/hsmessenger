@@ -34,27 +34,29 @@ sAction msgr conn msg = Just $ do
   MSGR.queueMessageConn msgr conn (Msg { msgNum = 1, msgContents = "Pong" } )
   return ()
 
-setup self action = do
+client :: String -> String -> Int -> IO ()
+client self target port = do
   selfAddr <- TCPT.tcpEntityFromStr self
-  msgr <- (MSGR.makeMessenger selfAddr [action] [eAction])
-          :: IO (MSGR.Messenger TCPT.TCPTransport Msg)
-  return msgr
-  
-client self target = do
   var <- CM.newMVar 0
   _ <- CM.takeMVar var
-  msgr <- setup self $ cAction var
-  targetAddr <- TCPT.tcpEntityFromStr target
+  msgr <- (MSGR.makeMessenger selfAddr [cAction var] [eAction])
+          :: IO (MSGR.Messenger TCPT.TCPTransport Msg)
+  targetAddr <- TCPT.tcpEntityFromStrWPort target port
   MSGR.queueMessageEntity msgr targetAddr
     (Msg { msgNum = 0, msgContents = "Ping" } )
+  _ <- CM.takeMVar var
+  return ()
 
-server self = do
-  msgr <- setup self sAction
+server :: String -> Int -> IO ()
+server self port = do
+  selfAddr <- TCPT.tcpEntityFromStrWPort self port
+  msgr <- (MSGR.makeMessenger selfAddr [sAction] [eAction])
+          :: IO (MSGR.Messenger TCPT.TCPTransport Msg)
   MSGR.bind msgr
 
 main = do
   args <- getArgs
   case args of
-    ["client", self, target] -> client self target
-    ["server", self] -> server self
+    ["client", self, shost, sport] -> client self shost (read sport)
+    ["server", shost, sport] -> server shost (read sport)
     _ -> print "Error"

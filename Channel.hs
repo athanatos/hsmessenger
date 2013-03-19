@@ -45,7 +45,7 @@ canPutItem chan amt = do
 putItem :: Channel a -> a -> Int -> STM ()
 putItem chan item cost = do
   full <- canPutItem chan cost
-  if full
+  if not full
     then retry
     else do
       incCost chan cost

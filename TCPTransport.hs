@@ -3,6 +3,7 @@ module TCPTransport ( TCPTransport
                     , TCPEntity
                     , TCPConnection
                     , tcpEntityFromStr
+                    , tcpEntityFromStrWPort
                     ) where
 
 import qualified Transport as T
@@ -29,6 +30,14 @@ data TCPEntity =
             }
   deriving Eq
 
+tcpEntityFromStrWPort :: String -> Int -> IO TCPEntity
+tcpEntityFromStrWPort str port = do
+  addrInfo:_ <- S.getAddrInfo Nothing (Just str) Nothing
+  return $
+    TCPEntity { entityAddr = setPort
+                             (S.addrAddress addrInfo) (fromIntegral port)
+              }
+
 tcpEntityFromStr :: String -> IO TCPEntity
 tcpEntityFromStr str = do
   addrInfo:_ <- S.getAddrInfo Nothing (Just str) Nothing
@@ -42,6 +51,11 @@ makeTuple = (\x -> case x of
   S.SockAddrInet a b -> (0, a, 0, b, (0,0,0,0), 0, "")
   S.SockAddrInet6 a b c d -> (1, a, b, 0, c, d, "")
   S.SockAddrUnix e -> (2, S.PortNum 0, 0, 0, (0,0,0,0), 0, e)) . entityAddr
+
+setPort addr port = case addr of
+  S.SockAddrInet a b -> S.SockAddrInet (S.PortNum port) b 
+  S.SockAddrInet6 a b c d -> S.SockAddrInet6 (S.PortNum port) b c d
+  S.SockAddrUnix e -> addr
 
 instance Ord TCPEntity where
   compare a b = compare (makeTuple a) (makeTuple b)
@@ -98,31 +112,35 @@ readMessage raw =
   in
    Left (msg, rest)
 
-recvForever :: TCPTransport -> ByteString -> IO (Maybe T.ConnException)
-recvForever trans bs =
+recvForever :: TCPTransport -> TCPConnection ->
+               ByteString -> IO (Maybe T.ConnException)
+recvForever trans conn bs =
   let
     res = readMessage bs
   in
    case res of
      Left (msg, rest) -> do
-       recvForever trans rest
-     Right ex -> return $ Just ex
+       print $ "Got a message?, len " ++ (show (BS.length msg))
+       fromMaybe (return ()) $ (mAction trans) trans conn msg
+       recvForever trans conn rest
+     Right ex -> print ex >> (return $ Just ex)
 
 sendForever :: TCPConnection -> IO (Maybe IOError)
 sendForever conn = do
+  print "Here"
   nextMsg <- STM.atomically $ C.getItem (connQueue conn)
   err <- CE.catch 
     (BSS.send (connSocket conn) (makeMessage nextMsg) >> return Nothing)
     (return . Just)
   case err of
     Nothing -> sendForever conn
-    Just err -> return $ Just err
+    Just err -> print err >> (return $ Just err)
 
 initConnection :: TCPTransport -> TCPConnection -> IO ()
 initConnection trans conn = do
   forkIO $ sendForever conn >> return ()
   bs <- BSS.getContents $ connSocket conn
-  forkIO $ recvForever trans bs >> return ()
+  forkIO $ recvForever trans conn bs >> return ()
   return ()
 
 data TCPTransport =
@@ -178,6 +196,7 @@ accepter trans = do
         (openConns trans)
         (M.insert (TCPEntity { entityAddr = caddr} ) conn map)
       return conn
+    initConnection trans conn
     return ()
 
 bindTransport :: TCPTransport -> IO ()
@@ -209,6 +228,7 @@ queueMessageTCPEntity trans entity msg = do
   if not created
     then CM.putMVar (cachedSocket trans) sock
     else do
+      S.connect (connSocket conn) (entityAddr entity)
       initConnection trans conn
       socknew <- S.socket (family trans) S.Stream S.defaultProtocol
       CM.putMVar (cachedSocket trans) sock
@@ -220,6 +240,8 @@ getConnection trans entity = do
   if created
     then CM.putMVar (cachedSocket trans) sock >> return conn
     else do
+      S.connect (connSocket conn) (entityAddr entity)
+      initConnection trans conn
       socknew <- S.socket (family trans) S.Stream S.defaultProtocol
       CM.putMVar (cachedSocket trans) sock
       return conn
