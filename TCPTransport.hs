@@ -1,7 +1,8 @@
 {-# LANGUAGE TypeFamilies #-}
-module TCPMessenger ( TCPTransport
+module TCPTransport ( TCPTransport
                     , TCPEntity
                     , TCPConnection
+                    , tcpEntityFromStr
                     ) where
 
 import qualified Transport as T
@@ -25,8 +26,13 @@ import qualified Channel as C
 -- TCPTransport
 data TCPEntity =
   TCPEntity { entityAddr :: S.SockAddr
-         }
+            }
   deriving Eq
+
+tcpEntityFromStr :: String -> IO TCPEntity
+tcpEntityFromStr str = do
+  addrInfo:_ <- S.getAddrInfo Nothing (Just str) Nothing
+  return $ TCPEntity { entityAddr = (S.addrAddress addrInfo) }
 
 makeTuple :: TCPEntity ->
              (Int, S.PortNumber, S.FlowInfo,
