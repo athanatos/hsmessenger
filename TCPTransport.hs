@@ -6,6 +6,7 @@ module TCPTransport ( TCPTransport
                     , tcpEntityFromStrWPort
                     ) where
 
+import Data.Serialize
 import qualified Transport as T
 import qualified Network.Socket.ByteString.Lazy as BSS
 import qualified Network.Socket as S
@@ -29,6 +30,12 @@ data TCPEntity =
   TCPEntity { entityAddr :: S.SockAddr
             }
   deriving Eq
+
+familyTCPEntity :: TCPEntity -> S.Family
+familyTCPEntity addr = case (entityAddr addr) of
+  S.SockAddrInet _ _ -> S.AF_INET
+  S.SockAddrInet6 _ _ _ _ -> S.AF_INET6
+  S.SockAddrUnix _ -> S.AF_UNIX
 
 tcpEntityFromStrWPort :: String -> Int -> IO TCPEntity
 tcpEntityFromStrWPort str port = do
@@ -65,22 +72,40 @@ data TCPConnection =
   TCPConnection { connStatus :: STM.TVar Status
                 , connPeer :: TCPEntity
                 , connQueue :: C.Channel ByteString
-                , connSocket :: S.Socket
+                , connSocket :: STM.TVar (Maybe S.Socket)
                 }
 
-makeConnection :: (S.Socket, S.SockAddr) -> STM.STM TCPConnection
-makeConnection (socket, addr) = do
-  status <- STM.newTVar Open
-  queue <- C.makeChannel 100
-  return $ TCPConnection { connStatus = status
-                         , connPeer = TCPEntity { entityAddr = addr }
-                         , connQueue = queue
-                         , connSocket = socket
-                         }
+-- Messages
+data MSGAcceptConn =
+  MSGAcceptConn { lastSeqReceived :: Int64
+                }
+
+instance Serialize MSGAcceptConn where
+  get = do
+    seq <- get
+    return MSGAcceptConn { lastSeqReceived = seq }
+  put = put . lastSeqReceived
+
+type MSGOpenConn = MSGAcceptConn
 
 queueOnConnection :: TCPConnection -> ByteString -> STM.STM ()
 queueOnConnection conn msg = do
   C.putItem (connQueue conn) msg $ fromIntegral $ BS.length msg
+
+makeConnection :: Maybe S.Socket -> S.SockAddr -> STM.STM TCPConnection
+makeConnection socket addr = do
+  status <- STM.newTVar Open
+  queue <- C.makeChannel 100
+  sock <- STM.newTVar socket
+  return $ TCPConnection { connStatus = status
+                         , connPeer = TCPEntity { entityAddr = addr }
+                         , connQueue = queue
+                         , connSocket = sock 
+                         }
+
+--acceptConnection :: TCPConnection -> IO ()
+--acceptConnection sock peeraddr = do
+  
 
 makeMessage :: ByteString -> ByteString
 makeMessage msg = BP.runPut $ do
@@ -155,12 +180,6 @@ data TCPTransport =
 
 sockAddr :: TCPTransport -> S.SockAddr
 sockAddr = entityAddr . selfAddr
-
-familyTCPEntity :: TCPEntity -> S.Family
-familyTCPEntity addr = case (entityAddr addr) of
-  S.SockAddrInet _ _ -> S.AF_INET
-  S.SockAddrInet6 _ _ _ _ -> S.AF_INET6
-  S.SockAddrUnix _ -> S.AF_UNIX
 
 family :: TCPTransport -> S.Family
 family = familyTCPEntity . selfAddr
