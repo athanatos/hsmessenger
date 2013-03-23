@@ -6,7 +6,7 @@ module TCPTransport ( TCPTransport
                     , tcpEntityFromStrWPort
                     ) where
 
-import Data.Serialize
+import Data.Binary
 import qualified Transport as T
 import qualified Network.Socket.ByteString.Lazy as BSS
 import qualified Network.Socket as S
@@ -16,8 +16,7 @@ import qualified Control.Concurrent.STM as STM
 import Data.Maybe
 import qualified Data.Map as M
 import qualified System.IO as SIO
-import qualified Data.Binary.Put as BP
-import qualified Data.Binary.Get as BG
+import qualified Data.Binary as DP
 import qualified Control.Exception as CE
 import Control.Concurrent
 import qualified Control.Concurrent.MVar as CM
@@ -76,15 +75,24 @@ data TCPConnection =
                 }
 
 -- Messages
+class Fixed x where
+  empty :: x
+
+fixedLen :: Fixed x => x -> Int64
+fixedLen x = ( BS.length . runGet ) $ 
+
 data MSGAcceptConn =
   MSGAcceptConn { lastSeqReceived :: Int64
                 }
 
-instance Serialize MSGAcceptConn where
+instance DP.Binary MSGAcceptConn where
   get = do
     seq <- get
     return MSGAcceptConn { lastSeqReceived = seq }
   put = put . lastSeqReceived
+
+instance Fixed MSGAcceptConn where
+  empty = MSGAcceptConn { lastSeqReceived = 0 }
 
 type MSGOpenConn = MSGAcceptConn
 

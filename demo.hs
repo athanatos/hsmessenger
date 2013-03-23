@@ -2,9 +2,7 @@ import qualified TCPTransport as TCPT
 import qualified Messenger as MSGR
 import Data.Int
 import System.Environment
-import Data.Serialize
-import qualified Data.Serialize.Put as SP
-import qualified Data.Serialize.Get as SG
+import Data.Binary
 import qualified Data.ByteString.Lazy as BS
 import qualified Control.Concurrent.MVar as CM
 
@@ -12,7 +10,7 @@ data Msg =
   Msg { msgNum      :: Int64
       , msgContents :: String
       }
-instance Serialize Msg where
+instance Binary Msg where
   put a = do
     put $ msgNum a
     put $ msgContents a

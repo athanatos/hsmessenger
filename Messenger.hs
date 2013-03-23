@@ -6,7 +6,7 @@ module Messenger ( Messenger
                  , queueMessageConn
                  ) where
 
-import Data.Serialize
+import qualified Data.Binary as DP
 import Data.Maybe
 import qualified Data.ByteString.Lazy as BS
 import qualified Transport as T
@@ -28,7 +28,7 @@ data Messenger t a =
   { getTransport :: t
   }
 
-makeMessenger :: T.Transport t => Serialize a =>
+makeMessenger :: T.Transport t => DP.Binary a =>
                  T.Entity t ->
                  [(Messenger t a -> T.Connection t -> a -> Maybe (IO ()))] ->
                  [(Messenger t a -> T.Connection t ->
@@ -43,9 +43,8 @@ makeMessenger addr _mActions _eActions =
 
     collapse ms trans conn bs = firstJust [x trans conn bs | x <- ms]
 
-    decodify x = \t conn bs -> case decodeLazy bs of
-      Left _ -> Nothing
-      Right msg -> x (Messenger { getTransport = t }) conn msg
+    decodify x = \t conn bs ->
+      x (Messenger { getTransport = t }) conn (DP.decode bs)
 
     eActions = collapse $
                [\t -> y (Messenger { getTransport = t }) | y <- _eActions]
@@ -56,18 +55,18 @@ makeMessenger addr _mActions _eActions =
      T.startTransport trans
      return $ Messenger { getTransport = trans }
 
-bind :: T.Transport t => Serialize a => Messenger t a -> IO ()
+bind :: T.Transport t => DP.Binary a => Messenger t a -> IO ()
 bind msgr = do
   T.bind (getTransport msgr)
 
-queueMessageEntity :: T.Transport t => Serialize a => 
+queueMessageEntity :: T.Transport t => DP.Binary a => 
                       Messenger t a -> T.Entity t -> a -> IO ()
 queueMessageEntity msger entity msg = do
-  T.queueMessageEntity (getTransport msger) entity (encodeLazy msg)
+  T.queueMessageEntity (getTransport msger) entity (DP.encode msg)
 
-queueMessageConn :: T.Transport t => Serialize a =>
+queueMessageConn :: T.Transport t => DP.Binary a =>
                     Messenger t a -> T.Connection t -> a -> IO ()
 queueMessageConn messenger conn message =
-  T.queueMessage (getTransport messenger) conn (encodeLazy message)
+  T.queueMessage (getTransport messenger) conn (DP.encode message)
 
 
