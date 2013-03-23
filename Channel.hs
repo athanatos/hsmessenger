@@ -22,10 +22,15 @@ import Data.Int
 -- Channel
 data Channel a =
   Channel
-  {channelQ :: (TChan (Int, a))
-  ,channelSize :: (TVar Int)
-  ,channelMaxSize :: Int
+  { channelQ :: (TChan (Int, a))
+  , channelSize :: (TVar Int)
+  , channelMaxSize :: Int
   }
+
+unGet :: Channel a -> [(Int, a)] -> STM ()
+unGet chan list = do
+  sequence $ map (unGetTChan $ channelQ chan) list
+  incCost chan $ sum $ map fst list
 
 makeChannel :: Int -> STM (Channel a)
 makeChannel maxSize = do
@@ -35,7 +40,6 @@ makeChannel maxSize = do
                    ,channelSize = chanSize
                    ,channelMaxSize = maxSize
                    }
-  
 
 canPutItem :: Channel a -> Int -> STM Bool
 canPutItem chan amt = do
