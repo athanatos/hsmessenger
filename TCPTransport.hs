@@ -27,14 +27,33 @@ import qualified Channel as C
 
 import TCPTransportTypes
 
+doclose :: S.Socket -> IO ()
+doclose sock = do
+  TM.sput sock $ TM.PayloadHeader { TM.pAction = TM.ReqClose
+                                  , TM.pLength = 0
+                                  , TM.plastSeqReceived = 0
+                                  }
+  waitClose
+  where
+    waitClose = do
+      msg <- TM.getMsg sock
+      case TM.mAction msg of
+        TM.ConfClose -> return ()
+        _ -> waitClose
+      
+
 -- States
-accepting :: TCPTransport -> S.Socket -> S.SockAddr -> IO ()
-accepting trans socket addr = do
+doaccept :: TCPTransport -> S.Socket -> S.SockAddr -> IO ()
+doaccept trans socket addr = do
   req <- TM.sget (undefined :: TM.MSGRequestConn) socket
+  (msock, newconn, setup) <- STM.atomically $ do
+    (newconn, setup) <- getAddConnection trans entity
+    msock <- maybeAcceptSocket newconn socket
+    return (msock, newconn, setup)
+  setup
   return ()
   where
     entity = TCPEntity { entityAddr = addr }
-  
 
 accepter :: TCPTransport -> IO ()
 accepter trans = do
@@ -43,7 +62,7 @@ accepter trans = do
   S.listen sock 0
   forever $ do
     (csock, caddr) <- S.accept sock
-    forkIO $ accepting trans csock caddr
+    forkIO $ doaccept trans csock caddr
     return ()
 
 bindTransport :: TCPTransport -> IO ()
