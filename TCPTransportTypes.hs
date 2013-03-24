@@ -56,39 +56,42 @@ instance Ord TCPEntity where
 
 
 -- TCPConnection
-data Status = Openning
+data Status = New
+            | Opening
             | Accepting
             | Open
             | Closing
             | Closed
-data ConnInit = Remote | Local
+data ConnInit = None | Remote | Local
 data TCPConnection =
   TCPConnection { connPeer :: TCPEntity
-                , connInit :: ConnInit
                 , connQueue :: C.Channel BS.ByteString
                 , connStatus :: STM.TVar Status
-                , writerRunning :: STM.TVar Bool
-                , readerRunning :: STM.TVar Bool
+                , connInit :: STM.TVar ConnInit
+                , socket :: STM.TVar (Maybe S.Socket)
                 }
 
 queueOnConnection :: TCPConnection -> BS.ByteString -> STM.STM ()
 queueOnConnection conn msg = do
   C.putItem (connQueue conn) msg $ fromIntegral $ BS.length msg
 
-makeConnection :: S.Socket -> S.SockAddr -> STM.STM TCPConnection
-makeConnection socket addr = do
-  status <- STM.newTVar Open
+makeConnection :: TCPEntity -> STM.STM TCPConnection
+makeConnection addr = do
+  status <- STM.newTVar New
   queue <- C.makeChannel 100
-  sock <- STM.newTVar socket
-  w <- STM.newTVar True
-  r <- STM.newTVar True
-  return $ TCPConnection { connStatus = status
-                         , connPeer = TCPEntity { entityAddr = addr }
+  init <- STM.newTVar None
+  sock <- STM.newTVar Nothing
+  return $ TCPConnection { connPeer = addr
                          , connQueue = queue
-                         , writerRunning = w
-                         , readerRunning = r
+                         , connStatus = status
+                         , connInit = init
+                         , socket = sock
                          }
 
+acceptConnection :: TCPConnection -> S.Socket -> ConnInit ->
+                    STM.STM ()
+acceptConnection conn sock inint = do
+  return ()
 
 -- TCPTransport
 data TCPTransport =
@@ -122,10 +125,14 @@ makeTransport addr mAction eAction = do
                         , eAction = eAction
                         }
 
-maybeAddConnection :: TCPTransport ->
-                      TCPEntity ->
-                      S.Socket ->
-                      ConnInit ->
-                      STM.STM Maybe Connection
-maybeAddConnection trans peer init = do
-
+getAddConnection :: TCPTransport ->
+                    TCPEntity ->
+                    STM.STM (TCPConnection, IO ())
+getAddConnection trans entity = do
+  cmap <- STM.readTVar $ openConns trans
+  case M.lookup entity cmap of
+    Just x -> return (x, return ())
+    Nothing -> do
+      conn <- makeConnection entity
+      STM.writeTVar (openConns trans) (M.insert entity conn cmap)
+      return (conn, return ())
