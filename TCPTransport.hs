@@ -62,6 +62,9 @@ sClose trans conn = do
   case sock of
     Nothing -> return ()
     Just _sock -> doclose _sock
+  STM.atomically $ do
+    STM.writeTVar (socket conn) Nothing
+    STM.writeTVar (connStatus conn) Closed
 
 sAccept :: TCPTransport -> TCPConnection -> IO ()
 sAccept trans conn = return ()
