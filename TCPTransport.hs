@@ -55,10 +55,13 @@ sOpen trans conn = do
             doclose sock
             selectState [Opening, Accepting, Closing] _state trans conn
       next
-             
 
 sClose :: TCPTransport -> TCPConnection -> IO ()
-sClose trans conn = return ()
+sClose trans conn = do
+  sock <- STM.atomically $ STM.readTVar (socket conn)
+  case sock of
+    Nothing -> return ()
+    Just _sock -> doclose _sock
 
 sAccept :: TCPTransport -> TCPConnection -> IO ()
 sAccept trans conn = return ()
