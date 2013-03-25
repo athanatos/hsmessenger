@@ -16,6 +16,7 @@ import qualified System.IO as SIO
 import qualified Data.Binary as DP
 import qualified Control.Exception as CE
 import qualified Control.Concurrent.MVar as CM
+import qualified Data.List as DL
 import Control.Concurrent
 import Data.Int
 import Data.Maybe
@@ -27,6 +28,68 @@ import qualified Channel as C
 
 import TCPTransportTypes
 
+-- States
+sOpen :: TCPTransport -> TCPConnection -> IO ()
+sOpen trans conn = do
+  sock <- S.socket (family trans) S.Stream S.defaultProtocol
+  S.connect sock (entityAddr $ connPeer conn)
+  TM.sput sock $ TM.MSGRequestConn { TM.rlastSeqReceived = 0 }
+  resp <- TM.sget (undefined :: TM.PayloadHeader) sock
+  case TM.pAction resp of
+    TM.ReqClose -> do
+      TM.sput sock $ TM.PayloadHeader { TM.pAction = TM.ConfClose
+                                      , TM.pLength = 0
+                                      , TM.plastSeqReceived = 0 }
+      S.sClose sock
+      STM.atomically (STM.readTVar $ connStatus conn)
+        >>= \x -> selectState [Opening, Accepting, Closing] x trans conn
+    TM.ConfOpen -> do
+      next <- STM.atomically $ do
+        _state <- STM.readTVar $ connStatus conn
+        case _state of
+          Opening -> do
+            STM.writeTVar (connStatus conn) Open
+            STM.writeTVar (socket conn) $ Just sock
+            return $ selectState [Open] Open trans conn
+          _ -> return $ do
+            doclose sock
+            selectState [Opening, Accepting, Closing] _state trans conn
+      next
+             
+
+sClose :: TCPTransport -> TCPConnection -> IO ()
+sClose trans conn = return ()
+
+sAccept :: TCPTransport -> TCPConnection -> IO ()
+sAccept trans conn = return ()
+
+sRunning :: TCPTransport -> TCPConnection -> IO ()
+sRunning trans conn = return ()
+
+sNew :: TCPTransport -> TCPConnection -> IO ()
+sNew trans conn = do
+  state <- STM.atomically $ do
+    _state <- STM.readTVar $ connStatus conn
+    case _state of
+      New -> STM.retry
+      _ -> return _state
+  selectState [Opening, Accepting, Closing] state trans conn
+
+selectState :: [Status] -> Status -> TCPTransport -> TCPConnection -> IO ()
+selectState statuses status = 
+  if status `elem` statuses
+  then case status of
+    New -> sNew
+    Opening -> sOpen
+    Accepting -> sAccept
+    Open -> sRunning
+    Closing -> sClose
+    Closed -> \_ _ -> return ()
+  else CE.throw $ TCPLogicException (
+    "_state " ++ (show status) ++ " not valid here"
+    )
+
+-- Utility
 doclose :: S.Socket -> IO ()
 doclose sock = do
   TM.sput sock $ TM.PayloadHeader { TM.pAction = TM.ReqClose
@@ -34,23 +97,27 @@ doclose sock = do
                                   , TM.plastSeqReceived = 0
                                   }
   waitClose
+  S.sClose sock
   where
     waitClose = do
       msg <- TM.getMsg sock
       case TM.mAction msg of
         TM.ConfClose -> return ()
         _ -> waitClose
-      
 
--- States
 doaccept :: TCPTransport -> S.Socket -> S.SockAddr -> IO ()
 doaccept trans socket addr = do
   req <- TM.sget (undefined :: TM.MSGRequestConn) socket
-  (msock, newconn, setup) <- STM.atomically $ do
-    (newconn, setup) <- getAddConnection trans entity
+  (msock, newconn, new) <- STM.atomically $ do
+    (newconn, new) <- getAddConnection trans entity
     msock <- maybeAcceptSocket newconn socket
-    return (msock, newconn, setup)
-  setup
+    return (msock, newconn, new)
+  when new $ do
+    forkIO $ sNew trans newconn
+    return ()
+  case msock of
+    Nothing -> return ()
+    Just sock -> forkIO (doclose sock) >> return ()
   return ()
   where
     entity = TCPEntity { entityAddr = addr }

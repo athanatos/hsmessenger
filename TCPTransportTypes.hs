@@ -65,8 +65,9 @@ data Status = New
             | Open
             | Closing
             | Closed
+  deriving (Eq, Show)
 data ConnInit = None | Remote | Local
-  deriving (Eq)
+  deriving (Eq, Show)
 toInt x = case x of
   None -> 0
   Remote -> 1
@@ -182,12 +183,12 @@ makeTransport addr mAction eAction = do
 
 getAddConnection :: TCPTransport ->
                     TCPEntity ->
-                    STM.STM (TCPConnection, IO ())
+                    STM.STM (TCPConnection, Bool)
 getAddConnection trans entity = do
   cmap <- STM.readTVar $ openConns trans
   case M.lookup entity cmap of
-    Just x -> return (x, return ())
+    Just x -> return (x, False)
     Nothing -> do
       conn <- makeConnection (selfAddr trans) entity
       STM.writeTVar (openConns trans) (M.insert entity conn cmap)
-      return (conn, return ())
+      return (conn, True)

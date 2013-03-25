@@ -62,17 +62,20 @@ instance NMessageFixed MSGRequestConn where
   empty _ = MSGRequestConn { rlastSeqReceived = 0 }
 
 -- Payload header (or close)
-data HAction = ReqClose | ConfClose | Intro
+data HAction = ReqClose | ConfClose | ConfOpen | Intro
+             deriving (Show)
 toTag :: HAction -> DP.Word8
 toTag act = case act of
   ReqClose -> 0
   ConfClose -> 1
-  Intro -> 2
+  ConfOpen -> 2
+  Intro -> 3
 fromTag :: DP.Word8 -> Maybe HAction
 fromTag tag = case tag of
   0 -> Just ReqClose
   1 -> Just ConfClose
-  2 -> Just Intro
+  2 -> Just ConfOpen
+  3 -> Just Intro
   _ -> Nothing
 data PayloadHeader =
   PayloadHeader { pAction :: HAction
