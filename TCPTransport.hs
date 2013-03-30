@@ -67,10 +67,37 @@ sClose trans conn = do
     STM.writeTVar (connStatus conn) Closed
 
 sAccept :: TCPTransport -> TCPConnection -> IO ()
-sAccept trans conn = return ()
+sAccept trans conn = do
+  next <- STM.atomically $ do
+    state <- STM.readTVar $ connStatus conn
+    case state of
+      Accepting -> do
+        _sock <- STM.readTVar $ socket conn
+        case _sock of
+          Just sock -> do
+            STM.writeTVar (connStatus conn) Open
+            return $ do
+              acceptSock sock
+              selectState [Open] Open trans conn
+          Nothing -> return $ CE.throwIO $ TCPLogicException (
+            "state " ++ (show state) ++ " must have socket!"
+            )
+      _ -> return $ do
+        selectState [Accepting, Closing] state trans conn
+  next
+  where
+    acceptSock sock = do
+      req <- TM.sget (undefined :: TM.MSGRequestConn) sock
+      TM.sput sock $ TM.PayloadHeader { TM.pAction = TM.ConfOpen
+                                      , TM.pLength = 0
+                                      , TM.plastSeqReceived = 0
+                                      }
 
+data ReaderStat = Run | Stop | Stopped
 sRunning :: TCPTransport -> TCPConnection -> IO ()
-sRunning trans conn = return ()
+sRunning trans conn = do
+  stopReader <- STM.atomically $ STM.newTVar Run
+  return ()
 
 sNew :: TCPTransport -> TCPConnection -> IO ()
 sNew trans conn = do
