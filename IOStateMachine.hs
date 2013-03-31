@@ -1,98 +1,60 @@
-{-# LANGUAGE FlexibleContexts, TypeFamilies #-}
+{-# LANGUAGE FlexibleContexts, TypeFamilies, MultiParamTypeClasses #-}
 module IOStateMachineR where
 
 import Control.Concurrent.STM
+import Control.Concurrent
 import Data.Int
 import Data.Maybe
 import Control.Monad
 import Control.Monad.Cont
+import Control.Monad.Reader
 import Control.Monad.State.Lazy
 import Channel
 
 class (Eq e, Show e) => Event e
 
-data SRState =
-  SRState { srCont :: () -> SR ()
+data SRState e s =
+  SRState { srCont :: () -> SR e s ()
+          , srDone :: TVar Bool
+          , srStateMachine :: StateMachine e s
           }
 
-type SR = StateT SRState (ContT () IO)
+type SR e s = StateT (SRState e s) (ContT () IO)
 
-yield :: SR ()
+yield :: SR e s ()
 yield = do
-  callCC $ \cc -> do
-    (SRState escape) <- get
-    put $ SRState cc
-    escape ()
-    return ()
+  state <- get
+  done <- liftIO $ atomically $ do
+    readTVar $ srDone state
+  if done
+    then (srCont state) ()
+    else return ()
+
+spawn' :: SR e s () -> SRState e s -> IO ()
+spawn' t state = do
+  forkIO $ do
+      (`runContT` (\x -> return x)) $ (`evalStateT` (state)) $ callCC $ \x -> do
+        put state { srCont = x }
+        t
   return ()
 
-spawn :: SR () -> SR ()
+spawn :: SR e s () -> SR e s ()
 spawn t = do
-  (SRState exit) <- get
-  callCC $ \cc -> do
-    callCC $ \c2 -> do
-      put $ SRState c2
-      cc ()
-    t
-    exit ()
+  state <- get
+  liftIO $ spawn' t state
 
-runSR :: SR () -> IO ()
-runSR = y . x . wrap
-  where
-    x = (`evalStateT` (SRState (\x -> return x)))
-    y = (`runContT` (\x -> (return :: () -> IO ()) x))
-    wrap t = do
-      callCC $ \x -> do
-        put $ SRState x
-        t
-
-x = do
-  liftIO $ print "hi"
-  yield
-  liftIO $ print "ho"
-  yield
-
-y = do
-  spawn x
-  liftIO $ print "1"
-  yield
-  liftIO $ print "2"
-  yield
-  liftIO $ print "3"
-
-z = do
-  runSR y
-
---x = do
---  o <- callCC $ \c1 -> (`evalStateT` c1) $ do
---    y <- get
---    return $ callCC $ \c2 -> do
---      y c2
---      return c2
---  return o
-
-data CCont = CCont (Maybe (() -> SR CCont))
-
-class (Eq s, Show s) => MState s where
+class (Eq s, Show s, Event e) => MState s e where
   type Info s :: *
   sEnter :: s -> IO ()
-  sRun :: s -> SR CCont
+  sRun :: s -> SR e s ()
   sExit :: s -> IO ()
-
---doNext :: CCont -> ISR CCont
---doNext (CCont cont) = do
---  case cont of
---    Nothing -> return $ CCont Nothing
---    Just _cont ->
---      callCC $ \x -> (`evalStateT` x) $ do
---        _cont ()
 
 data StateMachine e s =
   StateMachine { smTable :: s -> e -> s
                , smPendingEvts :: Channel e
                }
 
-makeStateMachine :: Event e => MState s =>
+makeStateMachine :: Event e => MState s e =>
                      s -> (s -> e -> s) -> IO (StateMachine e s)
 makeStateMachine start table = do
   chan <- atomically $ makeChannel 10
@@ -100,14 +62,14 @@ makeStateMachine start table = do
                         , smPendingEvts = chan
                         }
 
-nextState :: MState s => Event e => StateMachine e s -> s -> STM (Maybe s)
+nextState :: MState s e => Event e => StateMachine e s -> s -> STM (Maybe s)
 nextState mach state = do
   evt <- tryGetItem $ smPendingEvts mach
   case evt of
     Just x -> return $ Just $ (smTable mach) state x
     Nothing -> return Nothing
 
-loopState :: MState s => Event e => StateMachine e s -> s -> IO (Maybe s)
+loopState :: MState s e => Event e => StateMachine e s -> s -> IO (Maybe s)
 loopState mach state = do
   nstate <- atomically $ nextState mach state
   case nstate of
@@ -115,11 +77,11 @@ loopState mach state = do
     Nothing -> return Nothing
       
 
-runState :: MState s => Event e => StateMachine e s -> s -> IO ()
+runState :: MState s e => Event e => StateMachine e s -> s -> IO ()
 runState mach state = do
-  sEnter state
+  --sEnter state
   newState <- loopState mach state
-  sExit state
+  --sExit state
   return ()
   where
     table = smTable mach
