@@ -1,4 +1,8 @@
-{-# LANGUAGE FlexibleContexts, TypeFamilies, MultiParamTypeClasses #-}
+{-# LANGUAGE
+FlexibleContexts,
+TypeFamilies,
+MultiParamTypeClasses,
+ExistentialQuantification #-}
 module IOStateMachineR where
 
 import Control.Concurrent.STM
@@ -11,77 +15,81 @@ import Control.Monad.Reader
 import Control.Monad.State.Lazy
 import Channel
 
-class (Eq e, Show e) => Event e
+class (Show e, Eq e) => MEvent e
 
-data SRState e s =
-  SRState { srCont :: () -> SR e s ()
-          , srDone :: TVar Bool
-          , srStateMachine :: StateMachine e s
+class (Show s, Eq s, MEvent e) => MState_ e s where
+  smRun_ :: s -> SR e ()
+  smTrans_ :: s -> e -> s
+
+data MState e =
+  forall s. MState_ e s => MState { smRun :: s -> SR e ()
+                                  , smTrans :: s -> e -> Maybe (MState e)
+                                  }
+
+data StateMachine e =
+  StateMachine { smQueue :: Channel e
+               , smStop :: TVar Bool
+               }
+
+makeStateMachine :: IO (StateMachine e)
+makeStateMachine = do
+  q <- atomically $ makeChannel 10
+  s <- atomically $ newTVar False
+  return $ StateMachine q s
+
+data SRState e =
+  SRState { srCont :: () -> SR e ()
+          , srInner :: StateMachine e
+          , srOuter :: StateMachine e
+          , srOnExit :: IO ()
+          , srRunning :: TVar Int
           }
 
-type SR e s = StateT (SRState e s) (ContT () IO)
+change :: (Int -> Int) -> TVar Int -> STM ()
+change f x = do
+  cur <- readTVar x
+  writeTVar x $ f cur
+inc = change $ \x -> x + 1
+dec = change $ \x -> x - 1
 
-yield :: SR e s ()
+isZero :: TVar Int -> STM Bool
+isZero y = readTVar y >>= \x -> return $ x == 0
+
+type SR e = StateT (SRState e) (ContT () IO)
+
+yield :: SR e ()
 yield = do
   state <- get
   done <- liftIO $ atomically $ do
-    readTVar $ srDone state
+    readTVar $ smStop $ srInner state
   if done
     then (srCont state) ()
     else return ()
 
-spawn' :: SR e s () -> SRState e s -> IO ()
-spawn' t state = do
-  forkIO $ do
-      (`runContT` (\x -> return x)) $ (`evalStateT` (state)) $ callCC $ \x -> do
-        put state { srCont = x }
-        t
-  return ()
+deferOnExit :: IO () -> SR e ()
+deferOnExit t = do
+  cur <- get
+  put cur { srOnExit = t >> srOnExit cur }
 
-spawn :: SR e s () -> SR e s ()
+spawn' :: SR e () -> SRState e -> IO ThreadId
+spawn' t state = do
+  atomically $ inc $ srRunning state
+  forkIO $ do
+    counter <- atomically $ newTVar 0
+    (`runContT` (\x -> return x)) $ (`evalStateT` (state)) $ do
+      callCC $ \x -> do
+        put state { srCont = x, srRunning = counter }
+        deferOnExit $ atomically $ do
+          continue <- isZero counter
+          when (not continue) retry
+        deferOnExit $ do
+          atomically $ dec $ srRunning state
+        t
+      st <- get
+      liftIO $ srOnExit st
+
+spawn :: SR e () -> SR e ()
 spawn t = do
   state <- get
   liftIO $ spawn' t state
-
-class (Eq s, Show s, Event e) => MState s e where
-  type Info s :: *
-  sEnter :: s -> IO ()
-  sRun :: s -> SR e s ()
-  sExit :: s -> IO ()
-
-data StateMachine e s =
-  StateMachine { smTable :: s -> e -> s
-               , smPendingEvts :: Channel e
-               }
-
-makeStateMachine :: Event e => MState s e =>
-                     s -> (s -> e -> s) -> IO (StateMachine e s)
-makeStateMachine start table = do
-  chan <- atomically $ makeChannel 10
-  return $ StateMachine { smTable = table
-                        , smPendingEvts = chan
-                        }
-
-nextState :: MState s e => Event e => StateMachine e s -> s -> STM (Maybe s)
-nextState mach state = do
-  evt <- tryGetItem $ smPendingEvts mach
-  case evt of
-    Just x -> return $ Just $ (smTable mach) state x
-    Nothing -> return Nothing
-
-loopState :: MState s e => Event e => StateMachine e s -> s -> IO (Maybe s)
-loopState mach state = do
-  nstate <- atomically $ nextState mach state
-  case nstate of
-    Just x -> return nstate
-    Nothing -> return Nothing
-      
-
-runState :: MState s e => Event e => StateMachine e s -> s -> IO ()
-runState mach state = do
-  --sEnter state
-  newState <- loopState mach state
-  --sExit state
   return ()
-  where
-    table = smTable mach
