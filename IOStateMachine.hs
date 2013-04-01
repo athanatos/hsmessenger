@@ -16,33 +16,32 @@ import Control.Monad.State.Lazy
 import Channel
 
 class (Show e, Eq e) => MEvent e
-
-class (Show s, Eq s, MEvent e) => MState_ e s where
-  smRun_ :: s -> SR e ()
-  smTrans_ :: s -> e -> s
-
+class (Show s, Eq s, MEvent e) => IMState e s where
+  smRun :: s -> SR e ()
+  smTrans :: s -> e -> Maybe (MState e)
 data MState e =
-  forall s. MState_ e s => MState { smRun :: s -> SR e ()
-                                  , smTrans :: s -> e -> Maybe (MState e)
+  forall s. IMState e s => MState { smState_ :: s
+                                  , smRun_ :: s -> SR e ()
+                                  , smTrans_ :: s -> e -> Maybe (MState e)
                                   }
+makeState :: IMState e s => s -> MState e
+makeState st =
+  MState { smState_ = st
+         , smRun_ = smRun
+         , smTrans_ = smTrans
+         }
+smRun' :: MState e -> SR e ()
+smRun' state = case state of
+  MState a b c -> b a
+smTrans' :: MState e -> (e -> Maybe (MState e))
+smTrans' state = case state of
+  MState a b c -> c a
 
-data StateMachine e =
-  StateMachine { smQueue :: Channel e
-               , smStop :: TVar Bool
-               }
-
-makeStateMachine :: IO (StateMachine e)
-makeStateMachine = do
-  q <- atomically $ makeChannel 10
-  s <- atomically $ newTVar False
-  return $ StateMachine q s
-
-data SRState e =
+data SRState e s =
   SRState { srCont :: () -> SR e ()
-          , srInner :: StateMachine e
-          , srOuter :: StateMachine e
           , srOnExit :: IO ()
           , srRunning :: TVar Int
+          , srContents :: s
           }
 
 change :: (Int -> Int) -> TVar Int -> STM ()
@@ -56,6 +55,9 @@ isZero :: TVar Int -> STM Bool
 isZero y = readTVar y >>= \x -> return $ x == 0
 
 type SR e = StateT (SRState e) (ContT () IO)
+
+runSR :: SR e () -> SRState e -> IO ()
+runSR t s = (`runContT` (\x -> return x)) $ (`evalStateT` s) $ t
 
 yield :: SR e ()
 yield = do
@@ -71,12 +73,13 @@ deferOnExit t = do
   cur <- get
   put cur { srOnExit = t >> srOnExit cur }
 
-spawn' :: SR e () -> SRState e -> IO ThreadId
-spawn' t state = do
-  atomically $ inc $ srRunning state
-  forkIO $ do
+spawn :: SR e () -> SR e ()
+spawn t = do
+  state <- get
+  liftIO $ atomically $ inc $ srRunning state
+  liftIO $ forkIO $ do
     counter <- atomically $ newTVar 0
-    (`runContT` (\x -> return x)) $ (`evalStateT` (state)) $ do
+    (`runSR` state) $ do
       callCC $ \x -> do
         put state { srCont = x, srRunning = counter }
         deferOnExit $ atomically $ do
@@ -87,9 +90,28 @@ spawn' t state = do
         t
       st <- get
       liftIO $ srOnExit st
-
-spawn :: SR e () -> SR e ()
-spawn t = do
-  state <- get
-  liftIO $ spawn' t state
   return ()
+
+data StateMachine e =
+  StateMachine { smQueue :: Channel e
+               , smStop :: TVar Bool
+               }
+
+makeStateMachine' :: IO (StateMachine e)
+makeStateMachine' = do
+  q <- atomically $ makeChannel 10
+  s <- atomically $ newTVar False
+  return $ StateMachine q s
+
+runStateMachine' :: StateMachine e -> MState e -> SR e ()
+runStateMachine' sm st = do
+  liftIO $ atomically $ do
+    return ()
+  where
+    trans = smTrans' st
+    run = smTrans' st
+    chan = smQueue sm
+    check = do
+      if not $ channelEmpty chan
+         then 
+        
