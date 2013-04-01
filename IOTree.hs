@@ -123,6 +123,7 @@ _runIOTree s (IOTree t) news = do
   (`_runSR` news) $ do
     callCC $ \x -> do
       modify $ \y -> y { srCont = x }
+      _deferOnExit $ atomically $ _completeStop $ srChild news
       _deferOnExitWState _stopChildren
       t
     st <- get
@@ -162,6 +163,7 @@ spawn (IOTree t) = IOTree $ do
       (`_runSR` (_makeSubSRState newc state)) $ do
         callCC $ \x -> do
           modify $ \y -> y { srCont = x }
+          _deferOnExit $ atomically $ _completeStop newc
           _deferOnExit $ do
             tid <- myThreadId
             liftIO $ atomically $ _eraseTid state tid
