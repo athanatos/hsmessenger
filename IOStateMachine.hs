@@ -22,10 +22,10 @@ class (Show s, Eq s, MEvent e) => IMState i e s | s -> i e where
   smRun :: s -> IOTree i ()
   smTrans :: s -> e -> Maybe (MState e)
 data MState i e =
-  forall s. IMState e s => MState { smState_ :: s
-                                  , smRun_ :: s -> IOTree i ()
-                                  , smTrans_ :: s -> e -> Maybe (MState e)
-                                  }
+  forall s. IMState i e s => MState { smState_ :: s
+                                    , smRun_ :: s -> IOTree i ()
+                                    , smTrans_ :: s -> e -> Maybe (MState e)
+                                    }
 makeState :: IMState i e s => s -> MState i e
 makeState st =
   MState { smState_ = st
@@ -60,4 +60,4 @@ runStateMachine' sm st = do
     chan = smQueue sm
     check = do
       if not $ channelEmpty chan
-         then 
+        then 

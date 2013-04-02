@@ -13,6 +13,7 @@ module IOTree ( waitStopped
               , deferOnExit
               , deferOnExitWState
               , spawn
+              , spawnWState
               ) where
 
 import Control.Concurrent.STM
@@ -74,6 +75,7 @@ _makeEmptySRState s = do
                    , srContents = s
                    , srCMap = a
                    }
+
 _insertTid sr tid child = do
   m <- readTVar $ srCMap sr
   writeTVar (srCMap sr) (M.insert tid child m)
@@ -83,10 +85,6 @@ _eraseTid sr tid = do
 _stopChildren sr = do
   m <- atomically $ readTVar $ srCMap sr
   sequence_ $ map stopWaitChild (M.elems $ m)
-
-_makeSubSRState :: Child -> SRState s -> SRState s
-_makeSubSRState c old =
-  old { srChild = c, srOnExit = [], srCont = return }
 
 newtype IOTree s a = IOTree (SR s a)
 _down (IOTree a) = a
@@ -112,17 +110,17 @@ instance MonadReader s (IOTree s) where
 _runSR :: SR s () -> SRState s -> IO ()
 _runSR t s = (`runContT` return) $ (`evalStateT` s) $ t
 
-runIOTree :: s -> IOTree s () -> IO ()
-runIOTree a b = _makeEmptySRState a >>= _runIOTree a b >> return ()
-spawnIOTree :: s -> IOTree s () -> IO Child
-spawnIOTree a b = do
+runIOTree :: IOTree s () -> s -> IO ()
+runIOTree b a = _makeEmptySRState a >>= _runIOTree a b >> return ()
+spawnIOTree :: IOTree s () -> s -> IO (Child, ThreadId)
+spawnIOTree b a = do
   st <- _makeEmptySRState a
-  forkIO $ _runIOTree a b st
-  return $ srChild st
+  tid <- forkIO $ _runIOTree a b st
+  return $ (srChild st, tid)
 _runIOTree s (IOTree t) news = do
   (`_runSR` news) $ do
     callCC $ \x -> do
-      modify $ \y -> y { srCont = x }
+      modify $ \y -> y { srCont = x, srContents = s }
       _deferOnExit $ atomically $ _completeStop $ srChild news
       _deferOnExitWState _stopChildren
       t
@@ -150,29 +148,19 @@ _deferOnExitWState t = do
   cur <- get
   put cur { srOnExit = t:(srOnExit cur) }
 
-spawn :: IOTree s () -> IOTree s Child
-spawn (IOTree t) = IOTree $ do
+spawn ::  IOTree s () -> IOTree s Child
+spawn t = ask >>= spawnWState t
+
+spawnWState :: IOTree a () -> a -> IOTree s Child
+spawnWState t s = IOTree $ do
   state <- get
   gate <- liftIO $ atomically $ newTVar False
-  (c, tid) <- liftIO $ do 
-    newc <- atomically _makeEmptyChild
-    tid <- forkIO $ do
-      atomically $ do
-        go <- readTVar gate
-        when (not go) retry
-      (`_runSR` (_makeSubSRState newc state)) $ do
-        callCC $ \x -> do
-          modify $ \y -> y { srCont = x }
-          _deferOnExit $ atomically $ _completeStop newc
-          _deferOnExit $ do
-            tid <- myThreadId
-            liftIO $ atomically $ _eraseTid state tid
-          _deferOnExitWState _stopChildren
-          t
-        st <- get
-        sequence_ $ map (\x -> get >>= \y -> liftIO $ x y) (srOnExit st)
-    return (newc, tid)
-  liftIO $ atomically $ _insertTid state tid c
+  (newc, tid) <- liftIO $ (`spawnIOTree` s) $ do
+    liftIO $ atomically $ do
+      go <- readTVar gate
+      when (not go) retry
+    t
+  liftIO $ atomically $ _insertTid state tid newc
   liftIO $ atomically $ writeTVar gate True
-  return c
+  return newc
 
