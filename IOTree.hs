@@ -4,16 +4,16 @@ FlexibleInstances,
 TypeFamilies,
 MultiParamTypeClasses,
 ExistentialQuantification #-}
-module IOTree ( waitStopped
+module IOTree ( IOTree
+              , waitStopped
               , stopChild
               , stopWaitChild
               , runIOTree
               , spawnIOTree
-              , yield
+              , maybeStop
+              , stopOrRun
               , deferOnExit
-              , deferOnExitWState
               , spawn
-              , spawnWState
               ) where
 
 import Control.Concurrent.STM
@@ -25,9 +25,8 @@ import Control.Monad
 import Control.Monad.Cont
 import Control.Monad.Reader.Class
 import Control.Monad.State.Lazy
-import Channel
 
-type SR s = StateT (SRState s) (ContT () IO)
+type SR s = StateT SRState (ContT () IO)
 
 data Child =
   Child { cStop :: TVar Bool
@@ -58,21 +57,19 @@ _completeStop c = writeTVar (cStopped c) True
 _isDone :: Child -> STM Bool
 _isDone c = readTVar (cStop c)
 
-data SRState s =
+data SRState =
   SRState { srChild :: Child
-          , srCont :: () -> SR s ()
-          , srOnExit :: [SRState s -> IO ()]
-          , srContents :: s
+          , srCont :: () -> SR SRState ()
+          , srOnExit :: [SRState -> IO ()]
           , srCMap :: TVar (M.Map ThreadId Child)
           }
-_makeEmptySRState :: s -> IO (SRState s)
-_makeEmptySRState s = do
+_makeEmptySRState :: IO SRState
+_makeEmptySRState = do
   c <- atomically _makeEmptyChild
   a <- atomically $ newTVar M.empty
   return $ SRState { srChild = c
                    , srCont = return
                    , srOnExit = []
-                   , srContents = s
                    , srCMap = a
                    }
 
@@ -86,41 +83,30 @@ _stopChildren sr = do
   m <- atomically $ readTVar $ srCMap sr
   sequence_ $ map stopWaitChild (M.elems $ m)
 
-newtype IOTree s a = IOTree (SR s a)
+newtype IOTree a = IOTree (SR SRState a)
 _down (IOTree a) = a
-instance Monad (IOTree s) where
+instance Monad IOTree where
   a >>= f = IOTree $ _down a >>= \x -> _down $ f x
     
   return x = IOTree (return x)
 
-instance MonadIO (IOTree s) where
+instance MonadIO IOTree where
   liftIO x = IOTree (liftIO x)
 
-instance MonadReader s (IOTree s) where
-  ask = IOTree $ do
-    st <- get
-    return $ srContents st
-  local f (IOTree t) = IOTree $ do
-    st <- get
-    put st { srContents = f $ srContents st }
-    x <- t
-    put st
-    return x
-
-_runSR :: SR s () -> SRState s -> IO ()
+_runSR :: SR s () -> SRState -> IO ()
 _runSR t s = (`runContT` return) $ (`evalStateT` s) $ t
 
-runIOTree :: IOTree s () -> s -> IO ()
-runIOTree b a = _makeEmptySRState a >>= _runIOTree a b >> return ()
-spawnIOTree :: IOTree s () -> s -> IO (Child, ThreadId)
-spawnIOTree b a = do
-  st <- _makeEmptySRState a
-  tid <- forkIO $ _runIOTree a b st
+runIOTree :: IOTree () -> IO ()
+runIOTree b = _makeEmptySRState >>= _runIOTree b >> return ()
+spawnIOTree :: IOTree () -> IO (Child, ThreadId)
+spawnIOTree b = do
+  st <- _makeEmptySRState
+  tid <- forkIO $ _runIOTree b st
   return $ (srChild st, tid)
-_runIOTree s (IOTree t) news = do
+_runIOTree (IOTree t) news = do
   (`_runSR` news) $ do
     callCC $ \x -> do
-      modify $ \y -> y { srCont = x, srContents = s }
+      modify $ \y -> y { srCont = x }
       _deferOnExit $ atomically $ _completeStop $ srChild news
       _deferOnExitWState _stopChildren
       t
@@ -128,8 +114,8 @@ _runIOTree s (IOTree t) news = do
     sequence_ $ map (\x -> get >>= \y -> liftIO $ x y) (srOnExit st)
   return ()
 
-yield :: IOTree s ()
-yield = IOTree $ do
+maybeStop :: IOTree ()
+maybeStop = IOTree $ do
   state <- get
   done <- liftIO $ atomically $ do
     readTVar $ cStop $ srChild state
@@ -137,25 +123,31 @@ yield = IOTree $ do
     then (srCont state) ()
     else return ()
 
-deferOnExit :: IO () -> IOTree s ()
+stopOrRun :: STM a -> IOTree a
+stopOrRun t = IOTree $ do
+  state <- get
+  d <- liftIO $ atomically $ do
+    ndone <- readTVar $ cStop $ srChild state
+    case ndone of
+      False -> return $ do
+        srCont state ()
+        return (undefined :: a) -- this will never happen
+      True -> t >>= (return . return)
+  d
+
+deferOnExit :: IO () -> IOTree ()
 deferOnExit t = IOTree $ _deferOnExit t
 _deferOnExit t =
   modify $ \cur -> cur { srOnExit = (\_->t):(srOnExit cur) }
-
-deferOnExitWState :: (s -> IO ()) -> IOTree s ()
-deferOnExitWState t = IOTree $ _deferOnExitWState (\st -> t $ srContents st)
 _deferOnExitWState t = do
   cur <- get
   put cur { srOnExit = t:(srOnExit cur) }
 
-spawn ::  IOTree s () -> IOTree s Child
-spawn t = ask >>= spawnWState t
-
-spawnWState :: IOTree a () -> a -> IOTree s Child
-spawnWState t s = IOTree $ do
+spawn :: IOTree () -> IOTree Child
+spawn t = IOTree $ do
   state <- get
   gate <- liftIO $ atomically $ newTVar False
-  (newc, tid) <- liftIO $ (`spawnIOTree` s) $ do
+  (newc, tid) <- liftIO $ spawnIOTree $ do
     liftIO $ atomically $ do
       go <- readTVar gate
       when (not go) retry
@@ -163,4 +155,3 @@ spawnWState t s = IOTree $ do
   liftIO $ atomically $ _insertTid state tid newc
   liftIO $ atomically $ writeTVar gate True
   return newc
-
