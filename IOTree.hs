@@ -26,7 +26,7 @@ import Control.Monad.Cont
 import Control.Monad.Reader.Class
 import Control.Monad.State.Lazy
 
-type SR s = StateT SRState (ContT () IO)
+type SR = StateT SRState (ContT () IO)
 
 data Child =
   Child { cStop :: TVar Bool
@@ -59,7 +59,7 @@ _isDone c = readTVar (cStop c)
 
 data SRState =
   SRState { srChild :: Child
-          , srCont :: () -> SR SRState ()
+          , srCont :: () -> SR ()
           , srOnExit :: [SRState -> IO ()]
           , srCMap :: TVar (M.Map ThreadId Child)
           }
@@ -83,7 +83,7 @@ _stopChildren sr = do
   m <- atomically $ readTVar $ srCMap sr
   sequence_ $ map stopWaitChild (M.elems $ m)
 
-newtype IOTree a = IOTree (SR SRState a)
+newtype IOTree a = IOTree (SR a)
 _down (IOTree a) = a
 instance Monad IOTree where
   a >>= f = IOTree $ _down a >>= \x -> _down $ f x
@@ -93,7 +93,7 @@ instance Monad IOTree where
 instance MonadIO IOTree where
   liftIO x = IOTree (liftIO x)
 
-_runSR :: SR s () -> SRState -> IO ()
+_runSR :: SR () -> SRState -> IO ()
 _runSR t s = (`runContT` return) $ (`evalStateT` s) $ t
 
 runIOTree :: IOTree () -> IO ()
