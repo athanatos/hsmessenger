@@ -29,31 +29,21 @@ import qualified Channel as C
 import TCPTransportTypes
 
 -- States
-sOpen :: TCPTransport -> TCPConnection -> IO ()
-sOpen trans conn = do
-  sock <- S.socket (family trans) S.Stream S.defaultProtocol
-  S.connect sock (entityAddr $ connPeer conn)
-  TM.sput sock $ TM.MSGRequestConn { TM.rlastSeqReceived = 0 }
-  resp <- TM.sget (undefined :: TM.PayloadHeader) sock
-  case TM.pAction resp of
-    TM.ReqClose -> do
-      TM.sput sock $ TM.PayloadHeader { TM.pAction = TM.ConfClose
-                                      , TM.pLength = 0
-                                      , TM.plastSeqReceived = 0 }
-      S.sClose sock
-      STM.atomically (STM.readTVar $ connStatus conn)
-        >>= \x -> selectState [Opening, Accepting, Closing] x trans conn
-    TM.ConfOpen -> do
-      next <- STM.atomically $ do
-        _state <- STM.readTVar $ connStatus conn
-        case _state of
-          Opening -> do
-            STM.writeTVar (connStatus conn) Open
-            STM.writeTVar (socket conn) $ Just sock
-            return $ selectState [Open] Open trans conn
-          _ -> return $ do
-            doclose sock
-            selectState [Opening, Accepting, Closing] _state trans conn
+sOpen trans conn = MState {
+  msInit = return $ do
+     yield
+     sock <- liftIO $ S.socket (family trans) S.Stream S.defaultProtocol
+     liftIO $ S.connect sock (entityAddr $ connPeer conn)
+     liftIO $ TM.sput sock $ TM.MSGRequestConn { TM.rlastSeqReceived = 0 }
+     resp <- liftIO $ TM.sget (undefined :: TM.PayloadHeader) sock
+     case TM.pAction resp of
+       TM.ReqClose -> do
+         liftIO $ TM.sput sock $ TM.PayloadHeader { TM.pAction = TM.ConfClose
+                                                  , TM.pLength = 0
+                                                  , TM.plastSeqReceived = 0 }
+         S.sClose sock
+       TM.ConfOpen -> do
+         
       next
 
 sClose :: TCPTransport -> TCPConnection -> IO ()

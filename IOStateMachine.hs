@@ -19,56 +19,26 @@ import Control.Monad.State.Lazy
 import IOTree
 
 class (Show e, Eq e) => MEvent e
-data Reaction i e = Forward | Drop | Trans (State i e)
+data Reaction e = Forward | Drop | Trans (MState e)
 _notTrans x = case x of
   Trans x -> False
   _ -> True
   
-class (Show s, Eq s, MEvent e) => IMState i e s | s -> i e where
-  imRun :: s -> IOTree i ()
-  imTrans :: s -> e -> Reaction i e
-data MState i e =
-  forall s. IMState i e s => MState { msState :: s
-                                    , msRun :: s -> IOTree i ()
-                                    , msTrans :: s -> e -> Reaction i e
-                                    }
-makeState :: IMState i e s => s -> MState i e
-makeState st =
-  MState { msState = st
-         , msRun = imRun
-         , msTrans = imTrans
+data MState e =
+  MState { _msRun :: StateMachine e -> IOTree ()
+         , _msTrans :: e -> Reaction e
+         , _msSubState :: Maybe (MState e)
          }
-_msRun state = case state of
-  MState a b c -> b a
-_msTrans state = case state of
-  MState a b c -> c a
 
-data ActivationRecord i e =
-  ActivationRecord { arQueue :: TChan e
-                   , arStop :: TVar Bool
-                   , arState :: MState i e
+data ActivationRecord e =
+  ActivationRecord { _arState :: MState e
+                   , _arCleanup :: IOTree ()
                    }
-_arMake st = do
-  q <- newTChan
-  s <- newTVar False
-  return ActivationRecord { arQueue = q
-                          , arStop = s
-                          , arState = st
-                          }
-_arQueueEvent ar e = writeTChan (arQueue ar) e
-_arGetEvent ar = do
-  empty <- isEmptyTChan $ arQueue ar
-  case empty of
-    True -> return Nothing
-    False -> readTChan (arQueue ar) >>= return . Just
-_arStopped ar = readTVar (arStop ar)
-_arMapEvent = _msTrans . arState
+_arMapEvent = _msTrans . _arState
 
-data StateMachine i e =
-  StateMachine { smStop :: TVar Bool
-               , smStack :: TVar [ActivationRecord i e]
+data StateMachine e =
+  StateMachine { smStack :: TVar [ActivationRecord e]
                }
-_smStop sm = writeTVar (smStop sm) True
 _smPush sm ar = do
   st <- readTVar (smStack sm)
   writeTVar (smStack sm) (ar : st)
