@@ -4,7 +4,13 @@ TypeFamilies,
 MultiParamTypeClasses,
 ExistentialQuantification, 
 FunctionalDependencies #-}
-module IOStateMachineR where
+module IOStateMachine ( Reaction
+                      , MState
+                      , StateMachine
+                      , handleEvent
+                      , handleEventIO
+                      , createMachine
+                      ) where
 
 import Control.Concurrent.STM
 import Control.Concurrent.STM.TChan
@@ -20,12 +26,8 @@ import IOTree
 
 class (Show e, Eq e) => MEvent e
 data Reaction e = Forward | Drop | Trans (MState e)
-_notTrans x = case x of
-  Trans x -> False
-  _ -> True
-  
 data MState e =
-  MState { _msRun :: StateMachine e -> IOTree ()
+  MState { _msRun :: IOTree ()
          , _msTrans :: e -> Reaction e
          , _msSubState :: Maybe (MState e)
          }
@@ -39,16 +41,50 @@ _arMapEvent = _msTrans . _arState
 data StateMachine e =
   StateMachine { smStack :: TVar [ActivationRecord e]
                }
-_smPush sm ar = do
+
+createMachine :: MState e -> IO (StateMachine e)
+createMachine st = do
+  (todo, sm) <- liftIO $ atomically $ do
+    ars <- newTVar []
+    sm <- return $ StateMachine ars
+    todo <- _enterState sm [] [] st
+    return (todo, sm)
+  todo
+  return sm
+
+handleEvent :: StateMachine e -> e -> STM (IO ())
+handleEvent sm e = do
   st <- readTVar (smStack sm)
-  writeTVar (smStack sm) (ar : st)
-_smPop sm = readTVar (smStack sm) >>= (writeTVar (smStack sm)) . tail
-_smHandle sm e = do
-  st <- readTVar (smStack sm)
-  case (span (_notTrans . (`_msTrans` e) . arState ) st) of
-    (_, []) -> return ()
-    (done, x:xs) -> do
-      sequence_ $ (`map` done) $ \todone -> do
-        writeTVar (arStop todone) True
-      writeTVar (smStack sm) (x:xs)
-      _arQueueEvent x e
+  case span isForward $ toReactions e $ st of
+    (_, []) -> return $ return ()
+    (done, (ar,x):xs) -> case x of
+      Trans state -> _enterState sm (ar:(map fst done)) (map fst xs) state
+      _ -> return $ return ()
+  where
+    isForward (_, x) = case x of
+      Forward -> True
+      _ -> False
+    toReactions e = map $ \x -> (x, (`_msTrans` e) $ _arState x)
+
+handleEventIO :: StateMachine e -> e -> IO ()
+handleEventIO sm ev = join $ atomically $ handleEvent sm ev
+
+_enterState :: StateMachine e -> [ActivationRecord e] -> [ActivationRecord e] ->
+               MState e -> STM (IO ())
+_enterState sm done notdone state = do
+  setup <- setupRun $ subSt state
+  ars <- return $ toArs setup
+  writeTVar (smStack sm) ((map fst ars) ++ notdone)
+  return $ do
+    runIOTree $ sequence_ $ map _arCleanup done
+    sequence_ $ map snd ars
+  where
+    subSt st = (`unfoldr` st) $ \x -> do
+      sub <- (_msSubState x)
+      return (sub, sub)
+    setupRun sts = sequence $ (`map` sts) $ \x -> do
+      (child, t) <- lSpawnIOTree $ _msRun x
+      return (x, (liftIO $ atomically $ stopChild child, t))
+    toArs =
+      map (\(st, (cleanup, run)) -> (ActivationRecord st cleanup, run))
+    run sts = sequence_ $ map _msRun sts

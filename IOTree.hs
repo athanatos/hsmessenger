@@ -10,6 +10,7 @@ module IOTree ( IOTree
               , stopWaitChild
               , runIOTree
               , spawnIOTree
+              , lSpawnIOTree
               , maybeStop
               , stopOrRun
               , deferOnExit
@@ -63,10 +64,10 @@ data SRState =
           , srOnExit :: [SRState -> IO ()]
           , srCMap :: TVar (M.Map ThreadId Child)
           }
-_makeEmptySRState :: IO SRState
+_makeEmptySRState :: STM SRState
 _makeEmptySRState = do
-  c <- atomically _makeEmptyChild
-  a <- atomically $ newTVar M.empty
+  c <- _makeEmptyChild
+  a <- newTVar M.empty
   return $ SRState { srChild = c
                    , srCont = return
                    , srOnExit = []
@@ -87,7 +88,6 @@ newtype IOTree a = IOTree (SR a)
 _down (IOTree a) = a
 instance Monad IOTree where
   a >>= f = IOTree $ _down a >>= \x -> _down $ f x
-    
   return x = IOTree (return x)
 
 instance MonadIO IOTree where
@@ -97,10 +97,14 @@ _runSR :: SR () -> SRState -> IO ()
 _runSR t s = (`runContT` return) $ (`evalStateT` s) $ t
 
 runIOTree :: IOTree () -> IO ()
-runIOTree b = _makeEmptySRState >>= _runIOTree b >> return ()
+runIOTree b = atomically _makeEmptySRState >>= _runIOTree b >> return ()
+lSpawnIOTree :: IOTree () -> STM (Child, IO ())
+lSpawnIOTree b = do
+  st <- _makeEmptySRState
+  return (srChild st, (forkIO $ _runIOTree b st) >> return ())
 spawnIOTree :: IOTree () -> IO (Child, ThreadId)
 spawnIOTree b = do
-  st <- _makeEmptySRState
+  st <- atomically _makeEmptySRState
   tid <- forkIO $ _runIOTree b st
   return $ (srChild st, tid)
 _runIOTree (IOTree t) news = do
@@ -126,14 +130,13 @@ maybeStop = IOTree $ do
 stopOrRun :: STM a -> IOTree a
 stopOrRun t = IOTree $ do
   state <- get
-  d <- liftIO $ atomically $ do
+  join $ liftIO $ atomically $ do
     ndone <- readTVar $ cStop $ srChild state
     case ndone of
       False -> return $ do
         srCont state ()
         return (undefined :: a) -- this will never happen
       True -> t >>= (return . return)
-  d
 
 deferOnExit :: IO () -> IOTree ()
 deferOnExit t = IOTree $ _deferOnExit t
