@@ -1,6 +1,7 @@
 {-# LANGUAGE TypeFamilies, DeriveDataTypeable #-}
 module TCPTransportTypes where
 
+import qualified IOStateMachine as SM
 import qualified Network.Socket as S
 import qualified Control.Concurrent.STM as STM
 import qualified Data.ByteString.Lazy as BS
@@ -59,13 +60,6 @@ instance Ord TCPEntity where
 
 
 -- TCPConnection
-data Status = New
-            | Opening
-            | Accepting
-            | Open
-            | Closing
-            | Closed
-  deriving (Eq, Show)
 data ConnInit = None | Remote | Local
   deriving (Eq, Show)
 toInt x = case x of
@@ -74,39 +68,6 @@ toInt x = case x of
   Local -> 2
 instance Ord ConnInit where
   compare x y = compare (toInt x) (toInt y)
-
-data TCPConnection =
-  TCPConnection { connHost :: TCPEntity
-                , connPeer :: TCPEntity
-                , connQueue :: C.Channel BS.ByteString
-                , connStatus :: STM.TVar Status
-                , connInit :: STM.TVar ConnInit
-                , socket :: STM.TVar (Maybe S.Socket)
-                }
-
-queueOnConnection :: TCPConnection -> BS.ByteString -> STM.STM ()
-queueOnConnection conn msg = do
-  C.putItem (connQueue conn) msg $ fromIntegral $ BS.length msg
-
-makeConnection :: TCPEntity -> TCPEntity -> STM.STM TCPConnection
-makeConnection me addr = do
-  status <- STM.newTVar New
-  queue <- C.makeChannel 100
-  init <- STM.newTVar None
-  sock <- STM.newTVar Nothing
-  return $ TCPConnection { connHost = me
-                         , connPeer = addr
-                         , connQueue = queue
-                         , connStatus = status
-                         , connInit = init
-                         , socket = sock
-                         }
-
-data TCPLogicException = 
-  TCPLogicException String
-  deriving (Show, Typeable)
-instance CE.Exception TCPLogicException
-
 better :: ConnInit -> ConnInit -> TCPEntity -> TCPEntity -> Bool
 better i1 i2 e1 e2 =
   case i1 `compare` i2 of
@@ -120,34 +81,36 @@ better i1 i2 e1 e2 =
       _ -> False
     _ -> True
 
-maybeAcceptSocket :: TCPConnection -> S.Socket ->
-                     STM.STM (Maybe S.Socket)
-maybeAcceptSocket conn newsock = do
-  status <- STM.readTVar $ connStatus conn
-  init <- STM.readTVar $ connInit conn
-  oldsock <- STM.readTVar $ socket conn
-  case status of
-    New -> do
-      STM.writeTVar (connStatus conn) Accepting
-      STM.writeTVar (connInit conn) Remote
-      STM.writeTVar (socket conn) (Just newsock)
-      return oldsock
-    Closing -> 
-      CE.throw (
-        TCPLogicException "Closing should not be visible"
-        ) >> return Nothing
-    Closed ->
-      CE.throw (
-        TCPLogicException "Closed should not be visible"
-        ) >> return Nothing
-    _ -> if better Remote init (connHost conn) (connPeer conn)
-         then do
-           STM.writeTVar (connStatus conn) Accepting
-           STM.writeTVar (connInit conn) Remote
-           STM.writeTVar (socket conn) (Just newsock)
-           return oldsock
-         else do
-           return $ Just newsock
+data TCPEvt = TOpen
+            | TAccept S.Socket
+            | TMarkDown
+
+data TCPConnection =
+  TCPConnection { connHost :: TCPEntity
+                , connPeer :: TCPEntity
+                , connQueue :: C.Channel BS.ByteString
+                , connStatus :: SM.StateMachine TCPEvt
+                }
+
+queueOnConnection :: TCPConnection -> BS.ByteString -> STM.STM ()
+queueOnConnection conn msg = do
+  C.putItem (connQueue conn) msg $ fromIntegral $ BS.length msg
+
+makeConnection :: TCPEntity -> TCPEntity -> SM.MState TCPEvt ->
+                  STM.STM (TCPConnection, IO ())
+makeConnection me addr st = do
+  queue <- C.makeChannel 100
+  (sm, todo) <- SM.createMachine st
+  return $ (\x -> (x, todo)) $ TCPConnection { connHost = me
+                                             , connPeer = addr
+                                             , connQueue = queue
+                                             , connStatus = sm 
+                                             }
+
+data TCPLogicException = 
+  TCPLogicException String
+  deriving (Show, Typeable)
+instance CE.Exception TCPLogicException
 
 -- TCPTransport
 data TCPTransport =
@@ -180,15 +143,3 @@ makeTransport addr mAction eAction = do
                         , mAction = mAction
                         , eAction = eAction
                         }
-
-getAddConnection :: TCPTransport ->
-                    TCPEntity ->
-                    STM.STM (TCPConnection, Bool)
-getAddConnection trans entity = do
-  cmap <- STM.readTVar $ openConns trans
-  case M.lookup entity cmap of
-    Just x -> return (x, False)
-    Nothing -> do
-      conn <- makeConnection (selfAddr trans) entity
-      STM.writeTVar (openConns trans) (M.insert entity conn cmap)
-      return (conn, True)

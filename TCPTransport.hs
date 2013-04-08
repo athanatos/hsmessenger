@@ -30,7 +30,7 @@ import TCPTransportTypes
 
 -- States
 sOpen trans conn = MState {
-  msInit = return $ do
+  _msRun = do
      yield
      sock <- liftIO $ S.socket (family trans) S.Stream S.defaultProtocol
      liftIO $ S.connect sock (entityAddr $ connPeer conn)

@@ -10,6 +10,7 @@ module IOStateMachine ( Reaction
                       , handleEvent
                       , handleEventIO
                       , createMachine
+                      , createMachineIO
                       ) where
 
 import Control.Concurrent.STM
@@ -42,13 +43,16 @@ data StateMachine e =
   StateMachine { smStack :: TVar [ActivationRecord e]
                }
 
-createMachine :: MState e -> IO (StateMachine e)
+createMachine :: MState e -> STM (StateMachine e, IO ())
 createMachine st = do
-  (todo, sm) <- liftIO $ atomically $ do
-    ars <- newTVar []
-    sm <- return $ StateMachine ars
-    todo <- _enterState sm [] [] st
-    return (todo, sm)
+  ars <- newTVar []
+  sm <- return $ StateMachine ars
+  todo <- _enterState sm [] [] st
+  return (sm, todo)
+
+createMachineIO :: MState e -> IO (StateMachine e)
+createMachineIO st = do
+  (sm, todo) <- atomically $ createMachine st
   todo
   return sm
 
