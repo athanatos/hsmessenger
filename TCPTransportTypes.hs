@@ -84,6 +84,8 @@ better i1 i2 e1 e2 =
 data TCPEvt = TOpen
             | TAccept S.Socket
             | TMarkDown
+            | TOpened
+            | TClosed
 
 data TCPConnection =
   TCPConnection { connHost :: TCPEntity

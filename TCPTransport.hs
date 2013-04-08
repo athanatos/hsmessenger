@@ -25,13 +25,14 @@ import Control.Monad
 import qualified Transport as T
 import qualified TCPTransportMessages as TM
 import qualified Channel as C
+import qualified IOStateMachine as SM
 
 import TCPTransportTypes
 
 -- States
 sOpen trans conn = MState {
-  _msRun = do
-     yield
+  msRun = do
+     maybeStop
      sock <- liftIO $ S.socket (family trans) S.Stream S.defaultProtocol
      liftIO $ S.connect sock (entityAddr $ connPeer conn)
      liftIO $ TM.sput sock $ TM.MSGRequestConn { TM.rlastSeqReceived = 0 }
@@ -39,13 +40,14 @@ sOpen trans conn = MState {
      case TM.pAction resp of
        TM.ReqClose -> do
          liftIO $ TM.sput sock $ TM.PayloadHeader { TM.pAction = TM.ConfClose
-                                                  , TM.pLength = 0
-                                                  , TM.plastSeqReceived = 0 }
+                                                 , TM.pLength = 0
+                                                 , TM.plastSeqReceived = 0 }
          S.sClose sock
+         join $ stopOrRun $ liftIO $ SM.handleEvent (connStatus trans) TOpened
        TM.ConfOpen -> do
-         
-      next
+         join $ stopOrRun $ liftIO $ SM.handleEvent $ connStatus trans
 
+{-
 sClose :: TCPTransport -> TCPConnection -> IO ()
 sClose trans conn = do
   sock <- STM.atomically $ STM.readTVar (socket conn)
@@ -168,3 +170,4 @@ bindTransport trans = do
 --  queueMessage = queueMessage
 --  queueMessageEntity = queueMessageTCPEntity
 --  bind = bindTransport
+-}

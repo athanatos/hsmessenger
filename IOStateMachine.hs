@@ -28,16 +28,16 @@ import IOTree
 class (Show e, Eq e) => MEvent e
 data Reaction e = Forward | Drop | Trans (MState e)
 data MState e =
-  MState { _msRun :: IOTree ()
-         , _msTrans :: e -> Reaction e
-         , _msSubState :: Maybe (MState e)
+  MState { msRun :: IOTree ()
+         , msTrans :: e -> Reaction e
+         , msSubState :: Maybe (MState e)
          }
 
 data ActivationRecord e =
   ActivationRecord { _arState :: MState e
                    , _arCleanup :: IOTree ()
                    }
-_arMapEvent = _msTrans . _arState
+_arMapEvent = msTrans . _arState
 
 data StateMachine e =
   StateMachine { smStack :: TVar [ActivationRecord e]
@@ -68,7 +68,7 @@ handleEvent sm e = do
     isForward (_, x) = case x of
       Forward -> True
       _ -> False
-    toReactions e = map $ \x -> (x, (`_msTrans` e) $ _arState x)
+    toReactions e = map $ \x -> (x, (`msTrans` e) $ _arState x)
 
 handleEventIO :: StateMachine e -> e -> IO ()
 handleEventIO sm ev = join $ atomically $ handleEvent sm ev
@@ -84,11 +84,11 @@ _enterState sm done notdone state = do
     sequence_ $ map snd ars
   where
     subSt st = (`unfoldr` st) $ \x -> do
-      sub <- (_msSubState x)
+      sub <- (msSubState x)
       return (sub, sub)
     setupRun sts = sequence $ (`map` sts) $ \x -> do
-      (child, t) <- lSpawnIOTree $ _msRun x
+      (child, t) <- lSpawnIOTree $ msRun x
       return (x, (liftIO $ atomically $ stopChild child, t))
     toArs =
       map (\(st, (cleanup, run)) -> (ActivationRecord st cleanup, run))
-    run sts = sequence_ $ map _msRun sts
+    run sts = sequence_ $ map msRun sts
