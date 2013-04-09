@@ -8,9 +8,11 @@ import qualified Data.ByteString.Lazy as BS
 import qualified Data.Map as M
 import qualified Control.Exception as CE
 import qualified Control.Concurrent.STM as STM
+import qualified Control.Concurrent.STM.TChan as TC
 import qualified Control.Concurrent.MVar as CM
 import Data.Typeable
 import Data.Ord
+import Control.Monad
 import Control.Concurrent (MVar)
 
 import qualified Transport as T
@@ -92,6 +94,7 @@ data TCPConnection =
   TCPConnection { connHost :: TCPEntity
                 , connPeer :: TCPEntity
                 , connQueue :: C.Channel BS.ByteString
+                , connSent :: TC.TChan BS.ByteString
                 , connStatus :: SM.StateMachine TCPEvt
                 }
 
@@ -99,14 +102,22 @@ queueOnConnection :: TCPConnection -> BS.ByteString -> STM.STM ()
 queueOnConnection conn msg = do
   C.putItem (connQueue conn) msg $ fromIntegral $ BS.length msg
 
+getItem :: TCPConnection -> STM.STM BS.ByteString
+getItem conn = do
+  empty <- C.channelEmpty (connQueue conn)
+  when empty STM.retry
+  C.getItem (connQueue conn)
+
 makeConnection :: TCPEntity -> TCPEntity -> SM.MState TCPEvt ->
                   STM.STM (TCPConnection, IO ())
 makeConnection me addr st = do
   queue <- C.makeChannel 100
+  sent <- TC.newTChan
   (sm, todo) <- SM.createMachine st
   return $ (\x -> (x, todo)) $ TCPConnection { connHost = me
                                              , connPeer = addr
                                              , connQueue = queue
+                                             , connSent = sent 
                                              , connStatus = sm 
                                              }
 

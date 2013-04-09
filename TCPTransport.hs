@@ -38,86 +38,65 @@ sOpen trans conn = MState
        deferOnExit $ S.sClose sock
        liftIO $ S.connect sock (entityAddr $ connPeer conn)
        liftIO $ TM.sput sock $ TM.MSGRequestConn { TM.rlastSeqReceived = 0 }
-       resp <- liftIO $ TM.sget (undefined :: TM.PayloadHeader) sock
-       case TM.pAction resp of
-         TM.ReqClose -> do
-           liftIO $ TM.sput sock $ TM.PayloadHeader { TM.pAction = TM.ConfClose
-                                                    , TM.pLength = 0
-                                                    , TM.plastSeqReceived = 0 }
-           liftIO $ S.sClose sock
+       resp <- liftIO $ TM.readMsg sock
+       case resp of
+         TM.Payload _ _ -> CE.throw TM.RecvErr
+         TM.Control TM.ReqClose -> do
+           liftIO $ TM.writeCont sock TM.ConfClose
            (stopOrRun $ handleEvent (connStatus conn) TReset) >>= liftIO
-         TM.ConfOpen -> do
+         TM.Control TM.ConfOpen -> do
            (stopOrRun $ handleEvent (connStatus conn) $ TOpened sock) >>= liftIO
-  , msTrans = \_ -> Forward
+         _ -> CE.throw TM.RecvErr
+  , msTrans = \evt -> case evt of
+       TReset -> Trans $ sOpen trans conn
+       TAccept sock -> Trans $ sAccept trans conn sock
+       _ -> CE.throw TM.RecvErr
   , msSubState = Just $ sWaitSocket trans conn
   }
 
+sAccept trans conn sock = MState
+ { msRun = do
+      return ()
+ , msTrans = \_ -> Forward
+ , msSubState = Just $ sRunning trans conn sock
+ }
+
 sWaitSocket trans conn = MState
   { msRun = return ()
-  , msTrans = \_ -> Drop
+  , msTrans = \evt -> case evt of
+       TOpened sock -> Trans $ sRunning trans conn sock
+       _ -> Forward
   , msSubState = Nothing
   }
 
-
-       
+sRunning trans conn socket = MState
+  { msRun = do
+       sequence_ $ map spawn [reader, writer]
+       waitDone
+  , msTrans = \_ -> Forward
+  , msSubState = Nothing
+  }
+  where
+    reader = do
+      -- TODO: handle error
+      msg <- liftIO $ TM.readMsg socket
+      case msg of
+        TM.Payload _ payload -> do
+          liftIO $ fromMaybe (return ()) $
+            (mAction trans) trans conn payload
+          maybeStop
+          reader
+        TM.Control x -> case x of
+          TM.ReqClose -> do
+            liftIO $ TM.writeCont socket TM.ConfClose
+            (stopOrRun $ handleEvent (connStatus conn) $ TClosed) >>= liftIO
+          _ -> CE.throw TM.RecvErr
+    writer = do
+      msg <- stopOrRun $ getItem conn
+      liftIO $ TM.writeMsg socket msg
+      writer
 
 {-
-sAccept :: TCPTransport -> TCPConnection -> IO ()
-sAccept trans conn = do
-  next <- STM.atomically $ do
-    state <- STM.readTVar $ connStatus conn
-    case state of
-      Accepting -> do
-        _sock <- STM.readTVar $ socket conn
-        case _sock of
-          Just sock -> do
-            STM.writeTVar (connStatus conn) Open
-            return $ do
-              acceptSock sock
-              selectState [Open] Open trans conn
-          Nothing -> return $ CE.throwIO $ TCPLogicException (
-            "state " ++ (show state) ++ " must have socket!"
-            )
-      _ -> return $ do
-        selectState [Accepting, Closing] state trans conn
-  next
-  where
-    acceptSock sock = do
-      req <- TM.sget (undefined :: TM.MSGRequestConn) sock
-      TM.sput sock $ TM.PayloadHeader { TM.pAction = TM.ConfOpen
-                                      , TM.pLength = 0
-                                      , TM.plastSeqReceived = 0
-                                      }
-
-data ReaderStat = Run | Stop | Stopped
-sRunning :: TCPTransport -> TCPConnection -> IO ()
-sRunning trans conn = do
-  stopReader <- STM.atomically $ STM.newTVar Run
-  return ()
-
-sNew :: TCPTransport -> TCPConnection -> IO ()
-sNew trans conn = do
-  state <- STM.atomically $ do
-    _state <- STM.readTVar $ connStatus conn
-    case _state of
-      New -> STM.retry
-      _ -> return _state
-  selectState [Opening, Accepting, Closing] state trans conn
-
-selectState :: [Status] -> Status -> TCPTransport -> TCPConnection -> IO ()
-selectState statuses status = 
-  if status `elem` statuses
-  then case status of
-    New -> sNew
-    Opening -> sOpen
-    Accepting -> sAccept
-    Open -> sRunning
-    Closing -> sClose
-    Closed -> \_ _ -> return ()
-  else CE.throw $ TCPLogicException (
-    "_state " ++ (show status) ++ " not valid here"
-    )
-
 -- Utility
 doclose :: S.Socket -> IO ()
 doclose sock = do

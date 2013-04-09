@@ -62,23 +62,26 @@ instance NMessageFixed MSGRequestConn where
   empty _ = MSGRequestConn { rlastSeqReceived = 0 }
 
 -- Payload header (or close)
-data HAction = ReqClose | ConfClose | ConfOpen | Intro
+data HAction = ReqClose | ConfClose | ConfOpen | ReqOpen
              deriving (Show)
-toTag :: HAction -> DP.Word8
+toTag :: Maybe HAction -> DP.Word8
 toTag act = case act of
-  ReqClose -> 0
-  ConfClose -> 1
-  ConfOpen -> 2
-  Intro -> 3
+  Just cont -> case cont of
+    ReqClose -> 0
+    ConfClose -> 1
+    ConfOpen -> 2
+    ReqOpen -> 3
+  Nothing -> 4
 fromTag :: DP.Word8 -> Maybe HAction
 fromTag tag = case tag of
   0 -> Just ReqClose
   1 -> Just ConfClose
   2 -> Just ConfOpen
-  3 -> Just Intro
-  _ -> Nothing
+  4 -> Just ReqOpen
+  5 -> Nothing
+  _ -> CE.throw RecvErr
 data PayloadHeader =
-  PayloadHeader { pAction :: HAction
+  PayloadHeader { pAction :: Maybe HAction
                 , pLength :: Int64
                 , plastSeqReceived :: Int64
                 }
@@ -87,18 +90,17 @@ instance DP.Binary PayloadHeader where
     tag <- DP.getWord8
     len <- DP.get
     rec <- DP.get
-    case fromTag tag of
-      Just x -> return $ PayloadHeader { pAction = x
-                                       , pLength = len 
-                                       , plastSeqReceived = rec
-                                       }
-      Nothing -> CE.throw RecvErr
+    return $ PayloadHeader { pAction = fromTag tag
+                           , pLength = len
+                           , plastSeqReceived = rec
+                           }
   put x = do
     DP.putWord8 $ toTag $ pAction x
     (DP.put . pLength) x
     (DP.put . plastSeqReceived) x
+
 instance NMessageFixed PayloadHeader where
-  empty _ = PayloadHeader { pAction = ReqClose
+  empty _ = PayloadHeader { pAction = Just ReqClose
                           , pLength = 0
                           , plastSeqReceived = 0
                           }
@@ -111,22 +113,28 @@ type PayloadFooter = PayloadHeader
 
 -- Full msg
 data Msg =
-  Msg { mAction :: HAction
-      , mlastSeqReceieved :: Int64
-      , mPayload :: BS.ByteString
-      }
+  Payload { mlastSeqReceieved :: Int64
+          , mPayload :: BS.ByteString
+          }
+  | Control HAction
 
-getMsg :: NS.Socket -> IO Msg
-getMsg sock = do
+readMsg :: NS.Socket -> IO Msg
+readMsg sock = do
   header <- sget (undefined :: PayloadHeader) sock
-  msg <- case pAction header of
-    ReqClose -> return BS.empty
-    ConfClose -> return BS.empty
-    Intro -> do
+  case pAction header of
+    Nothing -> do
       msg <- recvMsg (pLength header) sock
       sget (undefined :: PayloadHeader) sock
-      return msg
-  return Msg { mAction = pAction header
-             , mlastSeqReceieved  = plastSeqReceived header 
-             , mPayload = msg
-             }
+      return $ Payload { mlastSeqReceieved  = plastSeqReceived header 
+                       , mPayload = msg
+                       }
+    Just cont -> return $ Control cont
+
+writeMsg :: NS.Socket -> BS.ByteString -> IO ()
+writeMsg sock msg = do
+  sendMsg sock $ PayloadHeader Nothing (BS.length msg) 0
+  safeSend sock msg
+  sendMsg sock $ PayloadHeader Nothing 0 0
+
+writeCont :: NS.Socket -> HAction -> IO ()
+writeCont sock act = sendMsg sock $ PayloadHeader (Just act) 0 0

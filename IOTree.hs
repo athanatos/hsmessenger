@@ -12,6 +12,7 @@ module IOTree ( IOTree
               , spawnIOTree
               , lSpawnIOTree
               , maybeStop
+              , waitDone
               , stopOrRun
               , deferOnExit
               , spawn
@@ -118,6 +119,14 @@ _runIOTree (IOTree t) news = do
     st <- get
     sequence_ $ map (\x -> get >>= \y -> liftIO $ x y) (srOnExit st)
   return ()
+
+waitDone :: IOTree ()
+waitDone = IOTree $ do
+  state <- get
+  liftIO $ atomically $ do
+    done <- readTVar $ cStop $ srChild state
+    when (not done) retry
+    return ()
 
 maybeStop :: IOTree ()
 maybeStop = IOTree $ do
