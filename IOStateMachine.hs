@@ -4,8 +4,8 @@ TypeFamilies,
 MultiParamTypeClasses,
 ExistentialQuantification, 
 FunctionalDependencies #-}
-module IOStateMachine ( Reaction
-                      , MState
+module IOStateMachine ( Reaction(Forward, Drop, Handle, Trans)
+                      , MState(MState, msRun, msTrans, msSubState)
                       , StateMachine
                       , handleEvent
                       , handleEventIO
@@ -26,7 +26,7 @@ import Control.Monad.State.Lazy
 import IOTree
 
 class (Show e, Eq e) => MEvent e
-data Reaction e = Forward | Drop | Trans (MState e)
+data Reaction e = Forward | Drop | Handle (e -> IOTree ()) | Trans (MState e)
 data MState e =
   MState { msRun :: IOTree ()
          , msTrans :: e -> Reaction e
@@ -63,6 +63,7 @@ handleEvent sm e = do
     (_, []) -> return $ return ()
     (done, (ar,x):xs) -> case x of
       Trans state -> _enterState sm (ar:(map fst done)) (map fst xs) state
+      Handle handler -> return (runIOTree $ handler e)
       _ -> return $ return ()
   where
     isForward (_, x) = case x of

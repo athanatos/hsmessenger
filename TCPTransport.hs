@@ -25,39 +25,43 @@ import Control.Monad
 import qualified Transport as T
 import qualified TCPTransportMessages as TM
 import qualified Channel as C
-import qualified IOStateMachine as SM
+import IOStateMachine
+import IOTree
 
 import TCPTransportTypes
 
 -- States
-sOpen trans conn = MState {
-  msRun = do
-     maybeStop
-     sock <- liftIO $ S.socket (family trans) S.Stream S.defaultProtocol
-     liftIO $ S.connect sock (entityAddr $ connPeer conn)
-     liftIO $ TM.sput sock $ TM.MSGRequestConn { TM.rlastSeqReceived = 0 }
-     resp <- liftIO $ TM.sget (undefined :: TM.PayloadHeader) sock
-     case TM.pAction resp of
-       TM.ReqClose -> do
-         liftIO $ TM.sput sock $ TM.PayloadHeader { TM.pAction = TM.ConfClose
-                                                 , TM.pLength = 0
-                                                 , TM.plastSeqReceived = 0 }
-         S.sClose sock
-         join $ stopOrRun $ liftIO $ SM.handleEvent (connStatus trans) TOpened
-       TM.ConfOpen -> do
-         join $ stopOrRun $ liftIO $ SM.handleEvent $ connStatus trans
+sOpen trans conn = MState
+  { msRun = do
+       maybeStop
+       sock <- liftIO $ S.socket (family trans) S.Stream S.defaultProtocol
+       deferOnExit $ S.sClose sock
+       liftIO $ S.connect sock (entityAddr $ connPeer conn)
+       liftIO $ TM.sput sock $ TM.MSGRequestConn { TM.rlastSeqReceived = 0 }
+       resp <- liftIO $ TM.sget (undefined :: TM.PayloadHeader) sock
+       case TM.pAction resp of
+         TM.ReqClose -> do
+           liftIO $ TM.sput sock $ TM.PayloadHeader { TM.pAction = TM.ConfClose
+                                                    , TM.pLength = 0
+                                                    , TM.plastSeqReceived = 0 }
+           liftIO $ S.sClose sock
+           (stopOrRun $ handleEvent (connStatus conn) TReset) >>= liftIO
+         TM.ConfOpen -> do
+           (stopOrRun $ handleEvent (connStatus conn) $ TOpened sock) >>= liftIO
+  , msTrans = \_ -> Forward
+  , msSubState = Just $ sWaitSocket trans conn
+  }
+
+sWaitSocket trans conn = MState
+  { msRun = return ()
+  , msTrans = \_ -> Drop
+  , msSubState = Nothing
+  }
+
+
+       
 
 {-
-sClose :: TCPTransport -> TCPConnection -> IO ()
-sClose trans conn = do
-  sock <- STM.atomically $ STM.readTVar (socket conn)
-  case sock of
-    Nothing -> return ()
-    Just _sock -> doclose _sock
-  STM.atomically $ do
-    STM.writeTVar (socket conn) Nothing
-    STM.writeTVar (connStatus conn) Closed
-
 sAccept :: TCPTransport -> TCPConnection -> IO ()
 sAccept trans conn = do
   next <- STM.atomically $ do

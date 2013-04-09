@@ -15,6 +15,7 @@ module IOTree ( IOTree
               , stopOrRun
               , deferOnExit
               , spawn
+              , liftIO
               ) where
 
 import Control.Concurrent.STM
