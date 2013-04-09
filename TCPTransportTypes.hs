@@ -12,6 +12,7 @@ import qualified Control.Concurrent.STM.TChan as TC
 import qualified Control.Concurrent.MVar as CM
 import Data.Typeable
 import Data.Ord
+import Data.Int
 import Control.Monad
 import Control.Concurrent (MVar)
 
@@ -96,6 +97,8 @@ data TCPConnection =
                 , connQueue :: C.Channel BS.ByteString
                 , connSent :: TC.TChan BS.ByteString
                 , connStatus :: SM.StateMachine TCPEvt
+                , connConnSeq :: STM.TVar Int64
+                , connLastRcvd :: STM.TVar Int64
                 }
 
 queueOnConnection :: TCPConnection -> BS.ByteString -> STM.STM ()
@@ -114,11 +117,15 @@ makeConnection me addr st = do
   queue <- C.makeChannel 100
   sent <- TC.newTChan
   (sm, todo) <- SM.createMachine st
+  connseq <- STM.newTVar 0
+  recvd <- STM.newTVar 0
   return $ (\x -> (x, todo)) $ TCPConnection { connHost = me
                                              , connPeer = addr
                                              , connQueue = queue
                                              , connSent = sent 
                                              , connStatus = sm 
+                                             , connConnSeq = connseq
+                                             , connLastRcvd = recvd
                                              }
 
 data TCPLogicException = 

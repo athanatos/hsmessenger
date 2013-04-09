@@ -83,27 +83,28 @@ fromTag tag = case tag of
 data PayloadHeader =
   PayloadHeader { pAction :: Maybe HAction
                 , pLength :: Int64
+                , pSeqNum :: Int64
                 , plastSeqReceived :: Int64
                 }
 instance DP.Binary PayloadHeader where
   get = do
     tag <- DP.getWord8
     len <- DP.get
+    seq <- DP.get
     rec <- DP.get
     return $ PayloadHeader { pAction = fromTag tag
                            , pLength = len
+                           , pSeqNum = seq
                            , plastSeqReceived = rec
                            }
   put x = do
     DP.putWord8 $ toTag $ pAction x
     (DP.put . pLength) x
+    (DP.put . pSeqNum) x
     (DP.put . plastSeqReceived) x
 
 instance NMessageFixed PayloadHeader where
-  empty _ = PayloadHeader { pAction = Just ReqClose
-                          , pLength = 0
-                          , plastSeqReceived = 0
-                          }
+  empty _ = PayloadHeader (Just ReqClose) 0 0 0
 
 -- Payload
 type Payload = BS.ByteString
@@ -132,9 +133,9 @@ readMsg sock = do
 
 writeMsg :: NS.Socket -> BS.ByteString -> IO ()
 writeMsg sock msg = do
-  sendMsg sock $ PayloadHeader Nothing (BS.length msg) 0
+  sendMsg sock $ PayloadHeader Nothing (BS.length msg) 0 0
   safeSend sock msg
-  sendMsg sock $ PayloadHeader Nothing 0 0
+  sendMsg sock $ PayloadHeader Nothing 0 0 0
 
 writeCont :: NS.Socket -> HAction -> IO ()
-writeCont sock act = sendMsg sock $ PayloadHeader (Just act) 0 0
+writeCont sock act = sendMsg sock $ PayloadHeader (Just act) 0 0 0

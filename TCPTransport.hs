@@ -17,6 +17,7 @@ import qualified Data.Binary as DP
 import qualified Control.Exception as CE
 import qualified Control.Concurrent.MVar as CM
 import qualified Data.List as DL
+import qualified Data.Map as M
 import Control.Concurrent
 import Data.Int
 import Data.Maybe
@@ -31,6 +32,11 @@ import IOTree
 import TCPTransportTypes
 
 -- States
+sInit trans = MState
+  { msRun = return ()
+  , 
+       
+
 sOpen trans conn = MState
   { msRun = do
        maybeStop
@@ -86,50 +92,32 @@ sRunning trans conn socket = MState
             (mAction trans) trans conn payload
           maybeStop
           reader
-        TM.Control x -> case x of
-          TM.ReqClose -> do
-            liftIO $ TM.writeCont socket TM.ConfClose
-            (stopOrRun $ handleEvent (connStatus conn) $ TClosed) >>= liftIO
-          _ -> CE.throw TM.RecvErr
+        TM.Control TM.ReqClose -> do
+          liftIO $ TM.writeCont socket TM.ConfClose
+          (stopOrRun $ handleEvent (connStatus conn) $ TClosed) >>= liftIO
+        _ -> CE.throw TM.RecvErr
     writer = do
       msg <- stopOrRun $ getItem conn
       liftIO $ TM.writeMsg socket msg
       writer
 
-{-
--- Utility
-doclose :: S.Socket -> IO ()
-doclose sock = do
-  TM.sput sock $ TM.PayloadHeader { TM.pAction = TM.ReqClose
-                                  , TM.pLength = 0
-                                  , TM.plastSeqReceived = 0
-                                  }
-  waitClose
-  S.sClose sock
-  where
-    waitClose = do
-      msg <- TM.getMsg sock
-      case TM.mAction msg of
-        TM.ConfClose -> return ()
-        _ -> waitClose
-
 doaccept :: TCPTransport -> S.Socket -> S.SockAddr -> IO ()
 doaccept trans socket addr = do
-  req <- TM.sget (undefined :: TM.MSGRequestConn) socket
-  (msock, newconn, new) <- STM.atomically $ do
-    (newconn, new) <- getAddConnection trans entity
-    msock <- maybeAcceptSocket newconn socket
-    return (msock, newconn, new)
-  when new $ do
-    forkIO $ sNew trans newconn
-    return ()
-  case msock of
-    Nothing -> return ()
-    Just sock -> forkIO (doclose sock) >> return ()
-  return ()
-  where
-    entity = TCPEntity { entityAddr = addr }
+  req <- TM.readMsg socket
+  case req of
+    _ -> CE.throw TM.RecvErr
+    TM.Control TM.ReqOpen -> return ()
+  join $ STM.atomically $ do
+    cmap <- STM.readTVar (openConns trans)
+    case M.lookup (TCPEntity addr) cmap of
+      Nothing -> do
+        (conn, act) <- makeConnection (selfAddr trans) (TCPEntity addr) $
+                       sAccept trans conn socket
+        return act
+      Just _ -> do
+        return $ return ()
 
+{-
 accepter :: TCPTransport -> IO ()
 accepter trans = do
   sock <- S.socket (family trans) S.Stream S.defaultProtocol
