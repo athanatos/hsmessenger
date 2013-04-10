@@ -127,7 +127,7 @@ readMsg sock = do
   print ("readMsg" ++ (show header))
   case pAction header of
     Nothing -> do
-      msg <- recvMsg (pLength header) sock
+      msg <- NSS.recv sock (pLength header)
       sget (undefined :: PayloadHeader) sock
       return $ Payload { mlastSeqReceieved  = plastSeqReceived header 
                        , mPayload = msg
@@ -137,12 +137,12 @@ readMsg sock = do
 
 writeMsg :: NS.Socket -> BS.ByteString -> IO ()
 writeMsg sock msg = do
-  print ("writeMsg" ++ (show msg))
+  print ("writeMsg " ++ (show msg))
   sendMsg sock $ PayloadHeader Nothing (BS.length msg) 0 0
   safeSend sock msg
   sendMsg sock $ PayloadHeader Nothing 0 0 0
 
 writeCont :: NS.Socket -> HAction -> IO ()
 writeCont sock act = do
-  print ("writeCont" ++ (show act))
+  print ("writeCont " ++ (show act))
   sendMsg sock $ PayloadHeader (Just act) 0 0 0

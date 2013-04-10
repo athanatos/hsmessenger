@@ -85,7 +85,7 @@ _enterState sm done notdone state = do
     runIOTree $ sequence_ $ map _arCleanup done
     sequence_ $ map snd ars
   where
-    subSt st = (st :) $ (`unfoldr` st) $ \x -> do
+    subSt st = reverse $ (st :) $ (`unfoldr` st) $ \x -> do
       sub <- (msSubState x)
       return (sub, sub)
     setupRun sts = sequence $ (`map` sts) $ \x -> do

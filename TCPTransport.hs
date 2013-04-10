@@ -57,28 +57,28 @@ sOpen trans conn = MState
            liftIO $ TM.writeCont sock TM.ConfClose
            (stopOrRun $ handleEvent (connStatus conn) TReset) >>= liftIO
          TM.Control TM.ConfOpen -> do
-           liftIO $ print "about to TOpened"
            (stopOrRun $ handleEvent (connStatus conn) $ TOpened sock) >>= liftIO
          _ -> CE.throw TM.RecvErr
+       waitDone
   , msTrans = \evt -> case evt of
        TReset -> Trans $ sOpen trans conn
        TAccept _ sock -> Trans $ sAccept trans conn sock
-       _ -> CE.throw TM.RecvErr
+       _ -> CE.throw $ TCPLogicException ("wrong evt sOpen " ++ (show evt))
   , msSubState = Just $ sWaitSocket trans conn
   }
 
 sAccept trans conn sock = MState
  { msRun = do
-      liftIO $ print "sAccept"
+      deferOnExit $ S.sClose sock
       liftIO $ TM.writeCont sock TM.ConfOpen
-      return ()
+      (stopOrRun $ handleEvent (connStatus conn) $ TAccepted) >>= liftIO
+      waitDone
  , msTrans = \_ -> Forward
  , msSubState = Just $ sWaitReady trans conn sock
  }
 
 sWaitReady trans conn socket = MState
   { msRun = do
-       liftIO $ print "sWaitReady"
        return ()
   , msTrans = \evt -> case evt of
        TAccepted -> Trans $ sRunning trans conn socket
@@ -104,7 +104,6 @@ sRunning trans conn socket = MState
   where
     reader = do
       -- TODO: handle error
-      liftIO $ print "About to read"
       msg <- liftIO $ TM.readMsg socket
       case msg of
         TM.Payload _ payload -> do
