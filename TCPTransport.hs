@@ -34,7 +34,12 @@ import TCPTransportTypes
 -- States
 sInit trans = MState
   { msRun = return ()
-  , 
+  , msTrans = \evt -> case evt of
+       TDoOpen conn -> Trans $ sOpen trans conn
+       TAccept conn sock -> Trans $ sAccept trans conn sock
+       _ -> CE.throw $ TCPLogicException ("wrong state" ++ (show evt))
+  , msSubState = Nothing
+  }
        
 
 sOpen trans conn = MState
@@ -55,7 +60,7 @@ sOpen trans conn = MState
          _ -> CE.throw TM.RecvErr
   , msTrans = \evt -> case evt of
        TReset -> Trans $ sOpen trans conn
-       TAccept sock -> Trans $ sAccept trans conn sock
+       TAccept _ sock -> Trans $ sAccept trans conn sock
        _ -> CE.throw TM.RecvErr
   , msSubState = Just $ sWaitSocket trans conn
   }
@@ -105,19 +110,19 @@ doaccept :: TCPTransport -> S.Socket -> S.SockAddr -> IO ()
 doaccept trans socket addr = do
   req <- TM.readMsg socket
   case req of
-    _ -> CE.throw TM.RecvErr
     TM.Control TM.ReqOpen -> return ()
+    _ -> CE.throw TM.RecvErr
   join $ STM.atomically $ do
     cmap <- STM.readTVar (openConns trans)
     case M.lookup (TCPEntity addr) cmap of
       Nothing -> do
         (conn, act) <- makeConnection (selfAddr trans) (TCPEntity addr) $
-                       sAccept trans conn socket
-        return act
+                       sInit trans
+        act2 <- handleEvent (connStatus conn) $ TAccept conn socket
+        return (act >> act2)
       Just _ -> do
         return $ return ()
 
-{-
 accepter :: TCPTransport -> IO ()
 accepter trans = do
   sock <- S.socket (family trans) S.Stream S.defaultProtocol
@@ -125,6 +130,7 @@ accepter trans = do
   S.listen sock 0
   forever $ do
     (csock, caddr) <- S.accept sock
+    print $ "Accepting " ++ (show csock)
     forkIO $ doaccept trans csock caddr
     return ()
 
@@ -132,13 +138,33 @@ bindTransport :: TCPTransport -> IO ()
 bindTransport trans = do
   accepter trans
 
---instance T.Transport TCPTransport where
---  type Entity TCPTransport = TCPEntity
---  type Connection TCPTransport = TCPConnection
---  makeTransport = makeTransport
---  startTransport = \x -> return ()
---  getConnection = getConnection
---  queueMessage = queueMessage
---  queueMessageEntity = queueMessageTCPEntity
---  bind = bindTransport
--}
+getConnection :: TCPTransport -> TCPEntity -> IO TCPConnection
+getConnection trans peer = do
+  join $ STM.atomically $ do
+    cmap <- STM.readTVar (openConns trans)
+    case M.lookup peer cmap of
+      Nothing -> do
+        (conn, act) <- makeConnection (selfAddr trans) peer $ sInit trans
+        act2 <- handleEvent (connStatus conn) $ TDoOpen conn
+        return $ act >> act2 >> return conn
+      Just x -> return $ return x
+
+queueMessage :: TCPTransport -> TCPConnection -> BS.ByteString -> IO ()
+queueMessage trans conn msg = STM.atomically $ do
+  C.putItem (connQueue conn) msg (fromIntegral $ BS.length msg)
+
+queueMessageEntity :: TCPTransport -> TCPEntity -> BS.ByteString -> IO ()
+queueMessageEntity trans peer msg = do
+  conn <- getConnection trans peer
+  queueMessage trans conn msg
+  print "getConnection"
+
+instance T.Transport TCPTransport where
+  type Entity TCPTransport = TCPEntity
+  type Connection TCPTransport = TCPConnection
+  makeTransport = makeTransport
+  startTransport = \x -> return ()
+  getConnection = getConnection
+  queueMessage = queueMessage
+  queueMessageEntity = queueMessageEntity
+  bind = bindTransport

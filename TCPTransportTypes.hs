@@ -23,7 +23,7 @@ import qualified Channel as C
 data TCPEntity =
   TCPEntity { entityAddr :: S.SockAddr
             }
-  deriving Eq
+  deriving (Eq, Show)
 
 familyTCPEntity :: TCPEntity -> S.Family
 familyTCPEntity addr = case (entityAddr addr) of
@@ -85,11 +85,13 @@ better i1 i2 e1 e2 =
     _ -> True
 
 data TCPEvt = TOpen
-            | TAccept S.Socket
             | TMarkDown
             | TReset
             | TOpened S.Socket
             | TClosed
+            | TAccept TCPConnection S.Socket
+            | TDoOpen TCPConnection
+            deriving Show
 
 data TCPConnection =
   TCPConnection { connHost :: TCPEntity
@@ -100,6 +102,8 @@ data TCPConnection =
                 , connConnSeq :: STM.TVar Int64
                 , connLastRcvd :: STM.TVar Int64
                 }
+instance Show TCPConnection where
+  show x = (show (connHost x)) ++ "-->" ++ (show (connPeer x))
 
 queueOnConnection :: TCPConnection -> BS.ByteString -> STM.STM ()
 queueOnConnection conn msg = do
