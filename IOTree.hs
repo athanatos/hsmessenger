@@ -106,6 +106,7 @@ lSpawnIOTree b = do
   return (srChild st, (forkIO $ _runIOTree b st) >> return ())
 spawnIOTree :: IOTree () -> IO (Child, ThreadId)
 spawnIOTree b = do
+  print "spawnIOTree"
   st <- atomically _makeEmptySRState
   tid <- forkIO $ _runIOTree b st
   return $ (srChild st, tid)
@@ -130,6 +131,7 @@ waitDone = IOTree $ do
 
 maybeStop :: IOTree ()
 maybeStop = IOTree $ do
+  liftIO $ print "MaybeStop"
   state <- get
   done <- liftIO $ atomically $ do
     readTVar $ cStop $ srChild state
@@ -141,12 +143,12 @@ stopOrRun :: STM a -> IOTree a
 stopOrRun t = IOTree $ do
   state <- get
   join $ liftIO $ atomically $ do
-    ndone <- readTVar $ cStop $ srChild state
-    case ndone of
-      False -> return $ do
+    done <- readTVar $ cStop $ srChild state
+    case done of
+      True -> return $ do
         srCont state ()
         return (undefined :: a) -- this will never happen
-      True -> t >>= (return . return)
+      False -> t >>= (return . return)
 
 deferOnExit :: IO () -> IOTree ()
 deferOnExit t = IOTree $ _deferOnExit t
@@ -158,6 +160,7 @@ _deferOnExitWState t = do
 
 spawn :: IOTree () -> IOTree Child
 spawn t = IOTree $ do
+  liftIO $ print "spawn"
   state <- get
   gate <- liftIO $ atomically $ newTVar False
   (newc, tid) <- liftIO $ spawnIOTree $ do

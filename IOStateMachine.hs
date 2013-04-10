@@ -5,6 +5,7 @@ MultiParamTypeClasses,
 ExistentialQuantification, 
 FunctionalDependencies #-}
 module IOStateMachine ( Reaction(Forward, Drop, Handle, Trans)
+                      , MEvent
                       , MState(MState, msRun, msTrans, msSubState)
                       , StateMachine
                       , handleEvent
@@ -25,7 +26,7 @@ import Control.Monad.Reader
 import Control.Monad.State.Lazy
 import IOTree
 
-class (Show e, Eq e) => MEvent e
+class (Show e) => MEvent e
 data Reaction e = Forward | Drop | Handle (e -> IOTree ()) | Trans (MState e)
 data MState e =
   MState { msRun :: IOTree ()
@@ -50,13 +51,13 @@ createMachine st = do
   todo <- _enterState sm [] [] st
   return (sm, todo)
 
-createMachineIO :: MState e -> IO (StateMachine e)
+createMachineIO :: MEvent e => MState e -> IO (StateMachine e)
 createMachineIO st = do
   (sm, todo) <- atomically $ createMachine st
   todo
   return sm
 
-handleEvent :: StateMachine e -> e -> STM (IO ())
+handleEvent :: MEvent e => StateMachine e -> e -> STM (IO ())
 handleEvent sm e = do
   st <- readTVar (smStack sm)
   case span isForward $ toReactions e $ st of
@@ -71,7 +72,7 @@ handleEvent sm e = do
       _ -> False
     toReactions e = map $ \x -> (x, (`msTrans` e) $ _arState x)
 
-handleEventIO :: StateMachine e -> e -> IO ()
+handleEventIO :: MEvent e => StateMachine e -> e -> IO ()
 handleEventIO sm ev = join $ atomically $ handleEvent sm ev
 
 _enterState :: StateMachine e -> [ActivationRecord e] -> [ActivationRecord e] ->
@@ -84,7 +85,7 @@ _enterState sm done notdone state = do
     runIOTree $ sequence_ $ map _arCleanup done
     sequence_ $ map snd ars
   where
-    subSt st = (`unfoldr` st) $ \x -> do
+    subSt st = (st :) $ (`unfoldr` st) $ \x -> do
       sub <- (msSubState x)
       return (sub, sub)
     setupRun sts = sequence $ (`map` sts) $ \x -> do

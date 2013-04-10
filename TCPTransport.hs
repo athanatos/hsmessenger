@@ -33,7 +33,8 @@ import TCPTransportTypes
 
 -- States
 sInit trans = MState
-  { msRun = return ()
+  { msRun = do
+       return ()
   , msTrans = \evt -> case evt of
        TDoOpen conn -> Trans $ sOpen trans conn
        TAccept conn sock -> Trans $ sAccept trans conn sock
@@ -48,7 +49,7 @@ sOpen trans conn = MState
        sock <- liftIO $ S.socket (family trans) S.Stream S.defaultProtocol
        deferOnExit $ S.sClose sock
        liftIO $ S.connect sock (entityAddr $ connPeer conn)
-       liftIO $ TM.sput sock $ TM.MSGRequestConn { TM.rlastSeqReceived = 0 }
+       liftIO $ TM.writeCont sock TM.ReqOpen
        resp <- liftIO $ TM.readMsg sock
        case resp of
          TM.Payload _ _ -> CE.throw TM.RecvErr
@@ -56,6 +57,7 @@ sOpen trans conn = MState
            liftIO $ TM.writeCont sock TM.ConfClose
            (stopOrRun $ handleEvent (connStatus conn) TReset) >>= liftIO
          TM.Control TM.ConfOpen -> do
+           liftIO $ print "about to TOpened"
            (stopOrRun $ handleEvent (connStatus conn) $ TOpened sock) >>= liftIO
          _ -> CE.throw TM.RecvErr
   , msTrans = \evt -> case evt of
@@ -67,10 +69,22 @@ sOpen trans conn = MState
 
 sAccept trans conn sock = MState
  { msRun = do
+      liftIO $ print "sAccept"
+      liftIO $ TM.writeCont sock TM.ConfOpen
       return ()
  , msTrans = \_ -> Forward
- , msSubState = Just $ sRunning trans conn sock
+ , msSubState = Just $ sWaitReady trans conn sock
  }
+
+sWaitReady trans conn socket = MState
+  { msRun = do
+       liftIO $ print "sWaitReady"
+       return ()
+  , msTrans = \evt -> case evt of
+       TAccepted -> Trans $ sRunning trans conn socket
+       _ -> Forward
+  , msSubState = Nothing
+  }
 
 sWaitSocket trans conn = MState
   { msRun = return ()
@@ -90,6 +104,7 @@ sRunning trans conn socket = MState
   where
     reader = do
       -- TODO: handle error
+      liftIO $ print "About to read"
       msg <- liftIO $ TM.readMsg socket
       case msg of
         TM.Payload _ payload -> do
@@ -130,7 +145,6 @@ accepter trans = do
   S.listen sock 0
   forever $ do
     (csock, caddr) <- S.accept sock
-    print $ "Accepting " ++ (show csock)
     forkIO $ doaccept trans csock caddr
     return ()
 
@@ -157,7 +171,6 @@ queueMessageEntity :: TCPTransport -> TCPEntity -> BS.ByteString -> IO ()
 queueMessageEntity trans peer msg = do
   conn <- getConnection trans peer
   queueMessage trans conn msg
-  print "getConnection"
 
 instance T.Transport TCPTransport where
   type Entity TCPTransport = TCPEntity

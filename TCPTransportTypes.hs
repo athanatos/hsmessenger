@@ -89,9 +89,11 @@ data TCPEvt = TOpen
             | TReset
             | TOpened S.Socket
             | TClosed
+            | TAccepted
             | TAccept TCPConnection S.Socket
             | TDoOpen TCPConnection
             deriving Show
+instance SM.MEvent TCPEvt
 
 data TCPConnection =
   TCPConnection { connHost :: TCPEntity

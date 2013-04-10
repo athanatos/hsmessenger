@@ -77,8 +77,8 @@ fromTag tag = case tag of
   0 -> Just ReqClose
   1 -> Just ConfClose
   2 -> Just ConfOpen
-  4 -> Just ReqOpen
-  5 -> Nothing
+  3 -> Just ReqOpen
+  4 -> Nothing
   _ -> CE.throw RecvErr
 data PayloadHeader =
   PayloadHeader { pAction :: Maybe HAction
@@ -86,6 +86,7 @@ data PayloadHeader =
                 , pSeqNum :: Int64
                 , plastSeqReceived :: Int64
                 }
+  deriving (Show)
 instance DP.Binary PayloadHeader where
   get = do
     tag <- DP.getWord8
@@ -118,10 +119,12 @@ data Msg =
           , mPayload :: BS.ByteString
           }
   | Control HAction
+    deriving (Show)
 
 readMsg :: NS.Socket -> IO Msg
 readMsg sock = do
   header <- sget (undefined :: PayloadHeader) sock
+  print ("readMsg" ++ (show header))
   case pAction header of
     Nothing -> do
       msg <- recvMsg (pLength header) sock
@@ -129,13 +132,17 @@ readMsg sock = do
       return $ Payload { mlastSeqReceieved  = plastSeqReceived header 
                        , mPayload = msg
                        }
-    Just cont -> return $ Control cont
+    Just cont -> do
+      return $ Control cont
 
 writeMsg :: NS.Socket -> BS.ByteString -> IO ()
 writeMsg sock msg = do
+  print ("writeMsg" ++ (show msg))
   sendMsg sock $ PayloadHeader Nothing (BS.length msg) 0 0
   safeSend sock msg
   sendMsg sock $ PayloadHeader Nothing 0 0 0
 
 writeCont :: NS.Socket -> HAction -> IO ()
-writeCont sock act = sendMsg sock $ PayloadHeader (Just act) 0 0 0
+writeCont sock act = do
+  print ("writeCont" ++ (show act))
+  sendMsg sock $ PayloadHeader (Just act) 0 0 0
