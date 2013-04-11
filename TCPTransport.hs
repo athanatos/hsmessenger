@@ -32,48 +32,49 @@ import IOTree
 import TCPTransportTypes
 
 -- States
-sInit trans = MState
+sInit lseq trans = MState
   { msRun = do
        return ()
   , msTrans = \evt -> case evt of
-       TDoOpen conn -> Trans $ sOpen trans conn
-       TAccept conn sock -> Trans $ sAccept trans conn sock
+       TDoOpen conn -> Trans $ sOpen lseq trans conn
+       TAccept conn sock _ _ -> Trans $ sAccept lseq trans conn sock
        _ -> CE.throw $ TCPLogicException ("wrong state" ++ (show evt))
   , msSubState = Nothing
   }
        
 
-sOpen trans conn = MState
+sOpen lseq trans conn = MState
   { msRun = do
        maybeStop
        sock <- liftIO $ S.socket (family trans) S.Stream S.defaultProtocol
        deferOnExit $ S.sClose sock
        liftIO $ S.connect sock (entityAddr $ connPeer conn)
-       liftIO $ TM.writeCont sock TM.ReqOpen
+       liftIO $ TM.writeCont sock TM.ReqOpen lseq 0
        resp <- liftIO $ TM.readMsg sock
        case resp of
-         TM.Payload _ _ -> CE.throw TM.RecvErr
-         TM.Control TM.ReqClose -> do
-           liftIO $ TM.writeCont sock TM.ConfClose
+         TM.Control TM.ReqClose _ _ -> do
+           liftIO $ TM.writeCont sock TM.ConfClose lseq 0
            (stopOrRun $ handleEvent (connStatus conn) TReset) >>= liftIO
-         TM.Control TM.ConfOpen -> do
+         TM.Control TM.ConfOpen _ _ -> do
            (stopOrRun $ handleEvent (connStatus conn) $ TOpened sock) >>= liftIO
-         _ -> CE.throw TM.RecvErr
+         _ -> CE.throw $ TCPLogicException "sOpen can't get Payload"
        waitDone
   , msTrans = \evt -> case evt of
-       TReset -> Trans $ sOpen trans conn
-       TAccept _ sock -> Trans $ sAccept trans conn sock
+       TReset -> Trans $ sOpen (lseq + 1) trans conn
+       TAccept _ sock _ _ -> Trans $ sAccept (lseq + 1) trans conn sock
        _ -> CE.throw $ TCPLogicException ("wrong evt sOpen " ++ (show evt))
   , msSubState = Just $ sWaitSocket trans conn
   }
 
-sAccept trans conn sock = MState
+sAccept lseq trans conn sock = MState
  { msRun = do
       deferOnExit $ S.sClose sock
-      liftIO $ TM.writeCont sock TM.ConfOpen
+      liftIO $ TM.writeCont sock TM.ConfOpen 0 0
       (stopOrRun $ handleEvent (connStatus conn) $ TAccepted) >>= liftIO
       waitDone
- , msTrans = \_ -> Forward
+ , msTrans = \evt -> case evt of 
+      TReset -> Trans $ sOpen (lseq + 1) trans conn
+      TAccept _ sock _ _ -> Trans $ sAccept (lseq + 1) trans conn sock
  , msSubState = Just $ sWaitReady trans conn sock
  }
 
@@ -111,8 +112,8 @@ sRunning trans conn socket = MState
             (mAction trans) trans conn payload
           maybeStop
           reader
-        TM.Control TM.ReqClose -> do
-          liftIO $ TM.writeCont socket TM.ConfClose
+        TM.Control TM.ReqClose _ _ -> do
+          liftIO $ TM.writeCont socket TM.ConfClose 0 0
           (stopOrRun $ handleEvent (connStatus conn) $ TClosed) >>= liftIO
         _ -> CE.throw TM.RecvErr
     writer = do
@@ -123,16 +124,16 @@ sRunning trans conn socket = MState
 doaccept :: TCPTransport -> S.Socket -> S.SockAddr -> IO ()
 doaccept trans socket addr = do
   req <- TM.readMsg socket
-  case req of
-    TM.Control TM.ReqOpen -> return ()
+  (lseq, mseq) <- return $ case req of
+    TM.Control TM.ReqOpen lseq mseq -> (lseq, mseq)
     _ -> CE.throw TM.RecvErr
   join $ STM.atomically $ do
     cmap <- STM.readTVar (openConns trans)
     case M.lookup (TCPEntity addr) cmap of
       Nothing -> do
         (conn, act) <- makeConnection (selfAddr trans) (TCPEntity addr) $
-                       sInit trans
-        act2 <- handleEvent (connStatus conn) $ TAccept conn socket
+                       sInit 0 trans
+        act2 <- handleEvent (connStatus conn) $ TAccept conn socket lseq mseq
         return (act >> act2)
       Just _ -> do
         return $ return ()
@@ -157,7 +158,7 @@ getConnection trans peer = do
     cmap <- STM.readTVar (openConns trans)
     case M.lookup peer cmap of
       Nothing -> do
-        (conn, act) <- makeConnection (selfAddr trans) peer $ sInit trans
+        (conn, act) <- makeConnection (selfAddr trans) peer $ sInit 0 trans
         act2 <- handleEvent (connStatus conn) $ TDoOpen conn
         return $ act >> act2 >> return conn
       Just x -> return $ return x

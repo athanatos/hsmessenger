@@ -90,10 +90,14 @@ data TCPEvt = TOpen
             | TOpened S.Socket
             | TClosed
             | TAccepted
-            | TAccept TCPConnection S.Socket
+            | TAccept TCPConnection S.Socket Int64 Int64
             | TDoOpen TCPConnection
             deriving Show
 instance SM.MEvent TCPEvt
+
+type MsgSeq = Int64
+type ConnSeq = Int64
+type GlobalSeq = Int64
 
 data TCPConnection =
   TCPConnection { connHost :: TCPEntity
@@ -101,8 +105,7 @@ data TCPConnection =
                 , connQueue :: C.Channel BS.ByteString
                 , connSent :: TC.TChan BS.ByteString
                 , connStatus :: SM.StateMachine TCPEvt
-                , connConnSeq :: STM.TVar Int64
-                , connLastRcvd :: STM.TVar Int64
+                , connLastRcvd :: STM.TVar MsgSeq
                 }
 instance Show TCPConnection where
   show x = (show (connHost x)) ++ "-->" ++ (show (connPeer x))
@@ -123,14 +126,12 @@ makeConnection me addr st = do
   queue <- C.makeChannel 100
   sent <- TC.newTChan
   (sm, todo) <- SM.createMachine st
-  connseq <- STM.newTVar 0
   recvd <- STM.newTVar 0
   return $ (\x -> (x, todo)) $ TCPConnection { connHost = me
                                              , connPeer = addr
                                              , connQueue = queue
                                              , connSent = sent 
                                              , connStatus = sm 
-                                             , connConnSeq = connseq
                                              , connLastRcvd = recvd
                                              }
 

@@ -62,7 +62,10 @@ instance NMessageFixed MSGRequestConn where
   empty _ = MSGRequestConn { rlastSeqReceived = 0 }
 
 -- Payload header (or close)
-data HAction = ReqClose | ConfClose | ConfOpen | ReqOpen
+data HAction = ReqClose
+             | ConfClose
+             | ConfOpen
+             | ReqOpen
              deriving (Show)
 toTag :: Maybe HAction -> DP.Word8
 toTag act = case act of
@@ -107,7 +110,7 @@ instance DP.Binary PayloadHeader where
 instance NMessageFixed PayloadHeader where
   empty _ = PayloadHeader (Just ReqClose) 0 0 0
 
--- Payload
+
 type Payload = BS.ByteString
 
 -- Footer
@@ -118,7 +121,7 @@ data Msg =
   Payload { mlastSeqReceieved :: Int64
           , mPayload :: BS.ByteString
           }
-  | Control HAction
+  | Control HAction Int64 Int64
     deriving (Show)
 
 readMsg :: NS.Socket -> IO Msg
@@ -133,7 +136,7 @@ readMsg sock = do
                        , mPayload = msg
                        }
     Just cont -> do
-      return $ Control cont
+      return $ Control cont (pSeqNum header) (plastSeqReceived header)
 
 writeMsg :: NS.Socket -> BS.ByteString -> IO ()
 writeMsg sock msg = do
@@ -142,7 +145,7 @@ writeMsg sock msg = do
   safeSend sock msg
   sendMsg sock $ PayloadHeader Nothing 0 0 0
 
-writeCont :: NS.Socket -> HAction -> IO ()
-writeCont sock act = do
+writeCont :: NS.Socket -> HAction -> Int64 -> Int64 -> IO ()
+writeCont sock act lseq mseq = do
   print ("writeCont " ++ (show act))
   sendMsg sock $ PayloadHeader (Just act) 0 0 0
