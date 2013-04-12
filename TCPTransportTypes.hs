@@ -12,6 +12,8 @@ import qualified Control.Concurrent.STM as STM
 import qualified Control.Concurrent.STM.TChan as TC
 import qualified Control.Concurrent.MVar as CM
 import Data.Typeable
+import qualified Data.Traversable as DT
+import qualified Data.Sequence as DS
 import Data.Ord
 import Data.Int
 import Control.Monad
@@ -112,37 +114,70 @@ instance SM.MEvent TCPEvt
 data TCPConnection =
   TCPConnection { connHost :: TCPEntity
                 , connPeer :: TCPEntity
-                , connQueue :: C.Channel BS.ByteString
-                , connSent :: TC.TChan BS.ByteString
+                , connQueue :: C.Channel (MSeq, BS.ByteString)
+                , connSent :: STM.TVar (DS.Seq (MSeq, BS.ByteString))
                 , connStatus :: SM.StateMachine TCPEvt
                 , connLastRcvd :: STM.TVar MSeq
+                , connLastQueued :: STM.TVar MSeq
+                , connLastAckd :: STM.TVar MSeq
                 }
 instance Show TCPConnection where
   show x = (show (connHost x)) ++ "-->" ++ (show (connPeer x))
 
+modifyTVar :: STM.TVar a -> (a -> a) -> STM.STM a
+modifyTVar tvar f = do
+  x <- STM.readTVar tvar
+  STM.writeTVar tvar (f x)
+  return x
+
+flipSent :: TCPConnection -> STM.STM()
+flipSent conn = do
+  sent <- modifyTVar (connSent conn) (\_ -> DS.empty)
+  DT.sequence $ fmap (\x -> C.unGet (connQueue conn)
+                           (fromIntegral $ BS.length $ snd x, x))
+    (DS.viewl sent)
+  return ()
+
+advanceRcvd :: TCPConnection -> MSeq -> STM.STM ()
+advanceRcvd conn seq = STM.writeTVar (connLastRcvd conn) seq
+
+advanceAckd :: TCPConnection -> MSeq -> STM.STM ()
+advanceAckd conn seq = do
+  STM.writeTVar (connLastAckd conn) seq
+  modifyTVar (connSent conn) (DS.dropWhileR ((< seq) . fst))
+  return ()
+
 queueOnConnection :: TCPConnection -> BS.ByteString -> STM.STM ()
 queueOnConnection conn msg = do
-  C.putItem (connQueue conn) msg $ fromIntegral $ BS.length msg
+  seq <- modifyTVar (connLastQueued conn) (+ 1)
+  C.putItem (connQueue conn) (seq, msg) $ fromIntegral $ BS.length msg
 
-getItem :: TCPConnection -> STM.STM BS.ByteString
-getItem conn = do
+getNextMsg :: TCPConnection -> STM.STM (MSeq, MSeq, BS.ByteString)
+getNextMsg conn = do
   empty <- C.channelEmpty (connQueue conn)
   when empty STM.retry
-  C.getItem (connQueue conn)
+  (mseq, bs) <- C.getItem (connQueue conn)
+  modifyTVar (connSent conn) ((DS.<|) (mseq, bs))
+  toack <- STM.readTVar (connLastRcvd conn)
+  return (mseq, toack, bs)
 
 makeConnection :: TCPEntity -> TCPEntity -> SM.MState TCPEvt ->
                   STM.STM (TCPConnection, IO ())
 makeConnection me addr st = do
-  queue <- C.makeChannel 100
-  sent <- TC.newTChan
+  queue <- C.makeChannel 10000
+  sentq <- STM.newTVar $ DS.empty
   (sm, todo) <- SM.createMachine st
   recvd <- STM.newTVar 0
+  qd <- STM.newTVar 0
+  acked <- STM.newTVar 0
   return $ (\x -> (x, todo)) $ TCPConnection { connHost = me
                                              , connPeer = addr
                                              , connQueue = queue
-                                             , connSent = sent 
+                                             , connSent = sentq
                                              , connStatus = sm 
                                              , connLastRcvd = recvd
+                                             , connLastQueued = qd
+                                             , connLastAckd = acked
                                              }
 
 data TCPLogicException = 

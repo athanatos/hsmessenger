@@ -50,13 +50,15 @@ sOpen gseq lseq trans conn = MState
        sock <- liftIO $ S.socket (family trans) S.Stream S.defaultProtocol
        deferOnExit $ S.sClose sock
        liftIO $ S.connect sock (entityAddr $ connPeer conn)
-       liftIO $ TM.writeCont sock $ TM.ReqOpen (connHost conn) gseq lseq 0
+       toack <- stopOrRun $ STM.readTVar (connLastRcvd conn)
+       liftIO $ TM.writeCont sock $ TM.ReqOpen (connHost conn) gseq lseq toack
        resp <- liftIO $ TM.readMsg sock
        case resp of
          TM.ReqClose -> do
            liftIO $ TM.writeCont sock TM.ConfClose
            (stopOrRun $ handleEvent (connStatus conn) TReset) >>= liftIO
          TM.ConfOpen lseq mseq -> do
+           stopOrRun $ advanceAckd conn mseq
            -- handle new lseq
            (stopOrRun $ handleEvent (connStatus conn) $ TOpened sock) >>= liftIO
          _ -> CE.throw $ TCPLogicException "sOpen can't get Payload"
@@ -73,20 +75,22 @@ sOpen gseq lseq trans conn = MState
   }
 
 sAccept gseq lseq mseq trans conn sock = MState
- { msRun = do
-      deferOnExit $ S.sClose sock
-      liftIO $ TM.writeCont sock $ TM.ConfOpen 0 0
-      (stopOrRun $ handleEvent (connStatus conn) $ TAccepted) >>= liftIO
-      waitDone
- , msTrans = \evt -> case evt of 
-      TReset -> Trans $ sOpen gseq (lseq + 1) trans conn
-      TAccept _ entity sock _ r_lseq mseq ->
-        case compare (lseq, connHost conn) (r_lseq, entity) of
-          EQ -> CE.throw $ TCPLogicException "same entity??"
-          LT -> Drop
-          GT -> Trans $ sAccept gseq r_lseq mseq trans conn sock
- , msSubState = Just $ sWaitReady trans conn sock
- }
+  { msRun = do
+       deferOnExit $ S.sClose sock
+       toack <- stopOrRun $
+                advanceAckd conn mseq >> STM.readTVar (connLastRcvd conn)
+       liftIO $ TM.writeCont sock $ TM.ConfOpen gseq toack
+       (stopOrRun $ handleEvent (connStatus conn) $ TAccepted) >>= liftIO
+       waitDone
+  , msTrans = \evt -> case evt of 
+       TReset -> Trans $ sOpen gseq (lseq + 1) trans conn
+       TAccept _ entity sock _ r_lseq mseq ->
+         case compare (lseq, connHost conn) (r_lseq, entity) of
+           EQ -> CE.throw $ TCPLogicException "same entity??"
+           LT -> Drop
+           GT -> Trans $ sAccept gseq r_lseq mseq trans conn sock
+  , msSubState = Just $ sWaitReady trans conn sock
+  }
 
 sWaitReady trans conn socket = MState
   { msRun = do
@@ -107,6 +111,7 @@ sWaitSocket trans conn = MState
 
 sRunning trans conn socket = MState
   { msRun = do
+       stopOrRun $ flipSent conn
        sequence_ $ map spawn [reader, writer]
        waitDone
   , msTrans = \_ -> Forward
@@ -117,9 +122,11 @@ sRunning trans conn socket = MState
       -- TODO: handle error
       msg <- liftIO $ TM.readMsg socket
       case msg of
-        TM.Payload _ payload -> do
+        TM.Payload mseq ack payload -> do
+          stopOrRun $ advanceAckd conn ack
           liftIO $ fromMaybe (return ()) $
             (mAction trans) trans conn payload
+          stopOrRun $ advanceRcvd conn mseq
           maybeStop
           reader
         TM.ReqClose -> do
@@ -127,8 +134,8 @@ sRunning trans conn socket = MState
           (stopOrRun $ handleEvent (connStatus conn) $ TClosed) >>= liftIO
         _ -> CE.throw TM.RecvErr
     writer = do
-      msg <- stopOrRun $ getItem conn
-      liftIO $ TM.writeMsg socket 0 msg
+      (seq, toack, msg) <- stopOrRun $ getNextMsg conn
+      liftIO $ TM.writeMsg socket seq toack msg
       writer
 
 doaccept :: TCPTransport -> S.Socket -> S.SockAddr -> IO ()
@@ -142,7 +149,7 @@ doaccept trans socket addr = do
     case M.lookup (TCPEntity addr) cmap of
       Nothing -> do
         (conn, act) <- makeConnection (selfAddr trans) (TCPEntity addr) $
-                       sInit gseq 0 trans
+                       sInit gseq lseq trans
         act2 <-
           handleEvent (connStatus conn) $
           TAccept conn entity socket gseq lseq mseq
@@ -177,7 +184,7 @@ getConnection trans peer = do
 
 queueMessage :: TCPTransport -> TCPConnection -> BS.ByteString -> IO ()
 queueMessage trans conn msg = STM.atomically $ do
-  C.putItem (connQueue conn) msg (fromIntegral $ BS.length msg)
+  queueOnConnection conn msg
 
 queueMessageEntity :: TCPTransport -> TCPEntity -> BS.ByteString -> IO ()
 queueMessageEntity trans peer msg = do

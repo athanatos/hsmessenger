@@ -1,13 +1,14 @@
 {-# LANGUAGE TypeFamilies #-}
 
 module Channel
-       (Channel
-       ,canPutItem
-       ,putItem
-       ,channelEmpty
-       ,getItem
-       ,tryGetItem
-       ,makeChannel
+       ( Channel
+       , canPutItem
+       , putItem
+       , unGet
+       , channelEmpty
+       , getItem
+       , tryGetItem
+       , makeChannel
        ) where
 
 import Control.Monad.State
@@ -27,10 +28,8 @@ data Channel a =
   , channelMaxSize :: Int
   }
 
-unGet :: Channel a -> [(Int, a)] -> STM ()
-unGet chan list = do
-  sequence $ map (unGetTChan $ channelQ chan) list
-  incCost chan $ sum $ map fst list
+unGet :: Channel a -> (Int, a) -> STM ()
+unGet chan = unGetTChan (channelQ chan)
 
 makeChannel :: Int -> STM (Channel a)
 makeChannel maxSize = do

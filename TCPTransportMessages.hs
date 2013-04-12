@@ -77,7 +77,7 @@ data TMessage = ReqClose
               | ConfClose
               | ConfOpen GSeq MSeq
               | ReqOpen TCPEntity GSeq CSeq MSeq
-              | Payload MSeq BS.ByteString
+              | Payload MSeq MSeq BS.ByteString
               deriving (Show, Generic, Typeable)
 instance DP.Serialize TMessage
 
@@ -86,8 +86,8 @@ readMsg sock = do
   PayloadHeader len <- sget (undefined :: PayloadHeader) sock
   recvMsg len sock 
 
-writeMsg :: NS.Socket -> MSeq -> BS.ByteString -> IO ()
-writeMsg sock seq msg = writeCont sock $ Payload seq msg
+writeMsg :: NS.Socket -> MSeq -> MSeq -> BS.ByteString -> IO ()
+writeMsg sock mseq toack msg = writeCont sock $ Payload mseq toack msg
 
 writeCont :: NS.Socket -> TMessage -> IO ()
 writeCont sock act = do
