@@ -1,4 +1,4 @@
 Error injection
 logging
-ack seq numbers
-accept/open race handling
+ack seq numbers - mostly done
+accept/open race handling - mostly done
