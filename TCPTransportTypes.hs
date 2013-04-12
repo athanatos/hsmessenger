@@ -1,6 +1,7 @@
-{-# LANGUAGE TypeFamilies, DeriveDataTypeable #-}
+{-# LANGUAGE TypeFamilies, DeriveDataTypeable, DeriveGeneric #-}
 module TCPTransportTypes where
 
+import qualified Data.Serialize as DP
 import qualified IOStateMachine as SM
 import qualified Network.Socket as S
 import qualified Control.Concurrent.STM as STM
@@ -15,15 +16,41 @@ import Data.Ord
 import Data.Int
 import Control.Monad
 import Control.Concurrent (MVar)
+import GHC.Generics
+import Data.Word
 
 import qualified Transport as T
 import qualified Channel as C
 
 -- Entity
+data NotASockAddr = NotSockAddrInet Word16 S.HostAddress
+                  | NotSockAddrInet6 Word16 S.FlowInfo S.HostAddress6 S.ScopeID
+                  | NotSockAddrUnix String
+                    deriving (Generic, Typeable)
+toNotASockAddr :: S.SockAddr -> NotASockAddr
+toNotASockAddr x = case x of
+  S.SockAddrInet (S.PortNum x) y -> NotSockAddrInet x y
+  S.SockAddrInet6 (S.PortNum x) y z a -> NotSockAddrInet6 x y z a
+  S.SockAddrUnix x -> NotSockAddrUnix x
+fromNotASockAddr :: NotASockAddr -> S.SockAddr
+fromNotASockAddr x = case x of
+  NotSockAddrInet x y -> S.SockAddrInet (S.PortNum x) y
+  NotSockAddrInet6 x y z a -> S.SockAddrInet6 (S.PortNum x) y z a
+  NotSockAddrUnix x -> S.SockAddrUnix x
+instance DP.Serialize NotASockAddr
+instance DP.Serialize S.SockAddr where
+  put = DP.put . toNotASockAddr
+  get = DP.get >>= (return . fromNotASockAddr)
+
 data TCPEntity =
   TCPEntity { entityAddr :: S.SockAddr
             }
-  deriving (Eq, Show)
+  deriving (Eq, Show, Typeable, Generic)
+instance DP.Serialize TCPEntity
+
+type CSeq = Int64 -- connection sequence
+type GSeq = Int64 -- global sequence
+type MSeq = Int64 -- message sequence
 
 familyTCPEntity :: TCPEntity -> S.Family
 familyTCPEntity addr = case (entityAddr addr) of
@@ -90,14 +117,10 @@ data TCPEvt = TOpen
             | TOpened S.Socket
             | TClosed
             | TAccepted
-            | TAccept TCPConnection S.Socket Int64 Int64
+            | TAccept TCPConnection S.Socket GSeq CSeq MSeq
             | TDoOpen TCPConnection
             deriving Show
 instance SM.MEvent TCPEvt
-
-type MsgSeq = Int64
-type ConnSeq = Int64
-type GlobalSeq = Int64
 
 data TCPConnection =
   TCPConnection { connHost :: TCPEntity
@@ -105,7 +128,7 @@ data TCPConnection =
                 , connQueue :: C.Channel BS.ByteString
                 , connSent :: TC.TChan BS.ByteString
                 , connStatus :: SM.StateMachine TCPEvt
-                , connLastRcvd :: STM.TVar MsgSeq
+                , connLastRcvd :: STM.TVar MSeq
                 }
 instance Show TCPConnection where
   show x = (show (connHost x)) ++ "-->" ++ (show (connPeer x))

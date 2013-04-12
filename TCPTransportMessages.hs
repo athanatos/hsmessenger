@@ -3,8 +3,10 @@ module TCPTransportMessages where
                             
 
 import Data.Int
+import Data.Word
 import Control.Monad
-import qualified Data.Binary as DP
+import qualified Data.Serialize as DP
+import qualified Data.Serialize.Put as DPP
 import qualified Network.Socket.ByteString.Lazy as NSS
 import qualified Network.Socket as NS
 import qualified Data.ByteString.Lazy as BS
@@ -12,6 +14,8 @@ import qualified Control.Exception as CE
 import qualified Control.Concurrent.MVar as CM
 import Data.Typeable
 import GHC.Generics (Generic)
+
+import TCPTransportTypes
 
 data TCPException = 
   SendErr |
@@ -28,20 +32,22 @@ safeSend socket bs = do
     then safeSend socket (BS.drop sent bs)
     else return ()
 
-sendMsg :: DP.Binary x => NS.Socket -> x -> IO ()
+sendMsg :: DP.Serialize x => NS.Socket -> x -> IO ()
 sendMsg socket x  = do
-  safeSend socket $ DP.encode x
+  safeSend socket $ DP.encodeLazy x
 
-recvMsg :: DP.Binary x => Int64 -> NS.Socket -> IO x
+recvMsg :: DP.Serialize x => Int64 -> NS.Socket -> IO x
 recvMsg size socket = do
   bs <- NSS.recv socket size
-  return $ DP.decode bs
+  return $ case DP.decodeLazy bs of
+    Right x -> x
+    Left _ -> CE.throw $ RecvErr
 
-class DP.Binary x => NMessageFixed x where
+class DP.Serialize x => NMessageFixed x where
   empty :: x -> x
 
   size :: x -> Int64
-  size y = (BS.length . DP.encode) (empty y)
+  size y = (BS.length . DP.encodeLazy) (empty y)
 
   sput :: NS.Socket -> x -> IO ()
   sput = sendMsg
@@ -53,99 +59,38 @@ class DP.Binary x => NMessageFixed x where
 data MSGRequestConn =
   MSGRequestConn { rlastSeqReceived :: Int64
                  }
-instance DP.Binary MSGRequestConn where
-  get = do
-    seq <- DP.get
-    return $ MSGRequestConn { rlastSeqReceived = seq }
-  put = (DP.put . rlastSeqReceived)
+  deriving (Show, Generic, Typeable)
+instance DP.Serialize MSGRequestConn
 instance NMessageFixed MSGRequestConn where
   empty _ = MSGRequestConn { rlastSeqReceived = 0 }
 
 -- Payload header (or close)
-data HAction = ReqClose
-             | ConfClose
-             | ConfOpen
-             | ReqOpen
-             deriving (Show)
-toTag :: Maybe HAction -> DP.Word8
-toTag act = case act of
-  Just cont -> case cont of
-    ReqClose -> 0
-    ConfClose -> 1
-    ConfOpen -> 2
-    ReqOpen -> 3
-  Nothing -> 4
-fromTag :: DP.Word8 -> Maybe HAction
-fromTag tag = case tag of
-  0 -> Just ReqClose
-  1 -> Just ConfClose
-  2 -> Just ConfOpen
-  3 -> Just ReqOpen
-  4 -> Nothing
-  _ -> CE.throw RecvErr
-data PayloadHeader =
-  PayloadHeader { pAction :: Maybe HAction
-                , pLength :: Int64
-                , pSeqNum :: Int64
-                , plastSeqReceived :: Int64
+newtype PayloadHeader =
+  PayloadHeader { plastSeqReceived :: Int64
                 }
-  deriving (Show)
-instance DP.Binary PayloadHeader where
-  get = do
-    tag <- DP.getWord8
-    len <- DP.get
-    seq <- DP.get
-    rec <- DP.get
-    return $ PayloadHeader { pAction = fromTag tag
-                           , pLength = len
-                           , pSeqNum = seq
-                           , plastSeqReceived = rec
-                           }
-  put x = do
-    DP.putWord8 $ toTag $ pAction x
-    (DP.put . pLength) x
-    (DP.put . pSeqNum) x
-    (DP.put . plastSeqReceived) x
-
+  deriving (Show, Generic, Typeable)
+instance DP.Serialize PayloadHeader
 instance NMessageFixed PayloadHeader where
-  empty _ = PayloadHeader (Just ReqClose) 0 0 0
+  empty _ = PayloadHeader 0
 
+data TMessage = ReqClose
+              | ConfClose
+              | ConfOpen GSeq MSeq
+              | ReqOpen TCPEntity GSeq CSeq MSeq
+              | Payload MSeq BS.ByteString
+              deriving (Show, Generic, Typeable)
+instance DP.Serialize TMessage
 
-type Payload = BS.ByteString
-
--- Footer
-type PayloadFooter = PayloadHeader
-
--- Full msg
-data Msg =
-  Payload { mlastSeqReceieved :: Int64
-          , mPayload :: BS.ByteString
-          }
-  | Control HAction Int64 Int64
-    deriving (Show)
-
-readMsg :: NS.Socket -> IO Msg
+readMsg :: NS.Socket -> IO TMessage
 readMsg sock = do
-  header <- sget (undefined :: PayloadHeader) sock
-  print ("readMsg" ++ (show header))
-  case pAction header of
-    Nothing -> do
-      msg <- NSS.recv sock (pLength header)
-      sget (undefined :: PayloadHeader) sock
-      return $ Payload { mlastSeqReceieved  = plastSeqReceived header 
-                       , mPayload = msg
-                       }
-    Just cont -> do
-      return $ Control cont (pSeqNum header) (plastSeqReceived header)
+  PayloadHeader len <- sget (undefined :: PayloadHeader) sock
+  recvMsg len sock 
 
-writeMsg :: NS.Socket -> BS.ByteString -> IO ()
-writeMsg sock msg = do
-  print ("writeMsg " ++ (show msg))
-  sendMsg sock $ PayloadHeader Nothing (BS.length msg) 0 0
-  safeSend sock msg
-  sendMsg sock $ PayloadHeader Nothing 0 0 0
+writeMsg :: NS.Socket -> MSeq -> BS.ByteString -> IO ()
+writeMsg sock seq msg = writeCont sock $ Payload seq msg
 
-writeCont :: NS.Socket -> HAction -> Int64 -> Int64 -> IO ()
-writeCont sock act lseq mseq = do
-  print ("writeCont " ++ (show act))
-  sendMsg sock $ PayloadHeader (Just act) 0 0 0
+writeCont :: NS.Socket -> TMessage -> IO ()
+writeCont sock act = do
+  bss <- return $ DP.encodeLazy act
+  sput sock $ PayloadHeader $ BS.length bss
+  safeSend sock bss
