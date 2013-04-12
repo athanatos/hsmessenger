@@ -31,6 +31,10 @@ import IOTree
 
 import TCPTransportTypes
 
+wrapIO :: TCPConnection $ IO a -> IOTree a
+wrapIO t = do
+  waitDone
+
 -- States
 sInit gseq lseq trans = MState
   { msRun = do
