@@ -98,26 +98,13 @@ toInt x = case x of
   Local -> 2
 instance Ord ConnInit where
   compare x y = compare (toInt x) (toInt y)
-better :: ConnInit -> ConnInit -> TCPEntity -> TCPEntity -> Bool
-better i1 i2 e1 e2 =
-  case i1 `compare` i2 of
-    LT -> case e1 `compare` e2 of
-      LT -> True
-      GT -> False
-      _ -> False
-    GT -> case e2 `compare` e1 of
-      LT -> True
-      GT -> False
-      _ -> False
-    _ -> True
 
 data TCPEvt = TOpen
-            | TMarkDown
             | TReset
             | TOpened S.Socket
             | TClosed
             | TAccepted
-            | TAccept TCPConnection S.Socket GSeq CSeq MSeq
+            | TAccept TCPConnection TCPEntity S.Socket GSeq CSeq MSeq
             | TDoOpen TCPConnection
             deriving Show
 instance SM.MEvent TCPEvt

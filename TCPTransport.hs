@@ -37,7 +37,7 @@ sInit gseq lseq trans = MState
        return ()
   , msTrans = \evt -> case evt of
        TDoOpen conn -> Trans $ sOpen gseq lseq trans conn
-       TAccept conn sock gseq lseq mseq ->
+       TAccept conn entity sock gseq lseq mseq ->
          Trans $ sAccept gseq lseq mseq trans conn sock
        _ -> CE.throw $ TCPLogicException ("wrong state" ++ (show evt))
   , msSubState = Nothing
@@ -50,20 +50,24 @@ sOpen gseq lseq trans conn = MState
        sock <- liftIO $ S.socket (family trans) S.Stream S.defaultProtocol
        deferOnExit $ S.sClose sock
        liftIO $ S.connect sock (entityAddr $ connPeer conn)
-       liftIO $ TM.writeCont sock $ TM.ReqOpen (connHost conn) lseq 0 0
+       liftIO $ TM.writeCont sock $ TM.ReqOpen (connHost conn) gseq lseq 0
        resp <- liftIO $ TM.readMsg sock
        case resp of
          TM.ReqClose -> do
            liftIO $ TM.writeCont sock TM.ConfClose
            (stopOrRun $ handleEvent (connStatus conn) TReset) >>= liftIO
-         TM.ConfOpen _ _ -> do
+         TM.ConfOpen lseq mseq -> do
+           -- handle new lseq
            (stopOrRun $ handleEvent (connStatus conn) $ TOpened sock) >>= liftIO
          _ -> CE.throw $ TCPLogicException "sOpen can't get Payload"
        waitDone
   , msTrans = \evt -> case evt of
        TReset -> Trans $ sOpen gseq (lseq + 1) trans conn
-       TAccept _ sock gseq lseq mseq ->
-         Trans $ sAccept gseq (lseq + 1) mseq trans conn sock
+       TAccept _ entity sock _ r_lseq mseq ->
+         case compare (lseq, entity) (r_lseq, connHost conn) of
+           EQ -> CE.throw $ TCPLogicException "same entity??"
+           LT -> Drop
+           GT -> Trans $ sAccept gseq r_lseq mseq trans conn sock
        _ -> CE.throw $ TCPLogicException ("wrong evt sOpen " ++ (show evt))
   , msSubState = Just $ sWaitSocket trans conn
   }
@@ -76,8 +80,11 @@ sAccept gseq lseq mseq trans conn sock = MState
       waitDone
  , msTrans = \evt -> case evt of 
       TReset -> Trans $ sOpen gseq (lseq + 1) trans conn
-      TAccept _ sock _ _ mseq ->
-        Trans $ sAccept gseq (lseq + 1) mseq trans conn sock
+      TAccept _ entity sock _ r_lseq mseq ->
+        case compare (lseq, connHost conn) (r_lseq, entity) of
+          EQ -> CE.throw $ TCPLogicException "same entity??"
+          LT -> Drop
+          GT -> Trans $ sAccept gseq r_lseq mseq trans conn sock
  , msSubState = Just $ sWaitReady trans conn sock
  }
 
@@ -127,8 +134,8 @@ sRunning trans conn socket = MState
 doaccept :: TCPTransport -> S.Socket -> S.SockAddr -> IO ()
 doaccept trans socket addr = do
   req <- TM.readMsg socket
-  (gseq, lseq, mseq) <- return $ case req of
-    TM.ReqOpen entity gseq lseq mseq -> (gseq, lseq, mseq)
+  (entity, gseq, lseq, mseq) <- return $ case req of
+    TM.ReqOpen entity gseq lseq mseq -> (entity, gseq, lseq, mseq)
     _ -> CE.throw TM.RecvErr
   join $ STM.atomically $ do
     cmap <- STM.readTVar (openConns trans)
@@ -137,7 +144,8 @@ doaccept trans socket addr = do
         (conn, act) <- makeConnection (selfAddr trans) (TCPEntity addr) $
                        sInit gseq 0 trans
         act2 <-
-          handleEvent (connStatus conn) $ TAccept conn socket gseq lseq mseq
+          handleEvent (connStatus conn) $
+          TAccept conn entity socket gseq lseq mseq
         return (act >> act2)
       Just _ -> do
         return $ return ()
