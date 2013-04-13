@@ -50,6 +50,9 @@ data TCPEntity =
   deriving (Eq, Show, Typeable, Generic)
 instance DP.Serialize TCPEntity
 
+class (DP.Serialize c, Show c, Ord c) => TCPUEntity c where
+  toTCPEntity :: c -> TCPEntity
+
 type CSeq = Int64 -- connection sequence
 type GSeq = Int64 -- global sequence
 type MSeq = Int64 -- message sequence
@@ -101,27 +104,27 @@ toInt x = case x of
 instance Ord ConnInit where
   compare x y = compare (toInt x) (toInt y)
 
-data TCPEvt = TOpen
+data TCPEvt x = TOpen
             | TReset
             | TOpened S.Socket
             | TClosed
             | TAccepted
-            | TAccept TCPConnection TCPEntity S.Socket GSeq CSeq MSeq
-            | TDoOpen TCPConnection
+            | TAccept (TCPConnection x) x S.Socket GSeq CSeq MSeq
+            | TDoOpen (TCPConnection x)
             deriving Show
-instance SM.MEvent TCPEvt
+instance Show x => SM.MEvent (TCPEvt x)
 
-data TCPConnection =
-  TCPConnection { connHost :: TCPEntity
-                , connPeer :: TCPEntity
+data TCPConnection x =
+  TCPConnection { connHost :: x
+                , connPeer :: x
                 , connQueue :: C.Channel (MSeq, BS.ByteString)
                 , connSent :: STM.TVar (DS.Seq (MSeq, BS.ByteString))
-                , connStatus :: SM.StateMachine TCPEvt
+                , connStatus :: SM.StateMachine (TCPEvt x)
                 , connLastRcvd :: STM.TVar MSeq
                 , connLastQueued :: STM.TVar MSeq
                 , connLastAckd :: STM.TVar MSeq
                 }
-instance Show TCPConnection where
+instance Show x => Show (TCPConnection x)where
   show x = (show (connHost x)) ++ "-->" ++ (show (connPeer x))
 
 modifyTVar :: STM.TVar a -> (a -> a) -> STM.STM a
@@ -130,7 +133,7 @@ modifyTVar tvar f = do
   STM.writeTVar tvar (f x)
   return x
 
-flipSent :: TCPConnection -> STM.STM()
+flipSent :: TCPConnection x -> STM.STM()
 flipSent conn = do
   sent <- modifyTVar (connSent conn) (\_ -> DS.empty)
   DT.sequence $ fmap (\x -> C.unGet (connQueue conn)
@@ -138,21 +141,21 @@ flipSent conn = do
     (DS.viewl sent)
   return ()
 
-advanceRcvd :: TCPConnection -> MSeq -> STM.STM ()
+advanceRcvd :: TCPConnection x -> MSeq -> STM.STM ()
 advanceRcvd conn seq = STM.writeTVar (connLastRcvd conn) seq
 
-advanceAckd :: TCPConnection -> MSeq -> STM.STM ()
+advanceAckd :: TCPConnection x -> MSeq -> STM.STM ()
 advanceAckd conn seq = do
   STM.writeTVar (connLastAckd conn) seq
   modifyTVar (connSent conn) (DS.dropWhileR ((< seq) . fst))
   return ()
 
-queueOnConnection :: TCPConnection -> BS.ByteString -> STM.STM ()
+queueOnConnection :: TCPConnection x -> BS.ByteString -> STM.STM ()
 queueOnConnection conn msg = do
   seq <- modifyTVar (connLastQueued conn) (+ 1)
   C.putItem (connQueue conn) (seq, msg) $ fromIntegral $ BS.length msg
 
-getNextMsg :: TCPConnection -> STM.STM (MSeq, MSeq, BS.ByteString)
+getNextMsg :: TCPConnection x -> STM.STM (MSeq, MSeq, BS.ByteString)
 getNextMsg conn = do
   empty <- C.channelEmpty (connQueue conn)
   when empty STM.retry
@@ -161,8 +164,8 @@ getNextMsg conn = do
   toack <- STM.readTVar (connLastRcvd conn)
   return (mseq, toack, bs)
 
-makeConnection :: TCPEntity -> TCPEntity -> SM.MState TCPEvt ->
-                  STM.STM (TCPConnection, IO ())
+makeConnection :: TCPUEntity x => x -> x -> SM.MState (TCPEvt x) ->
+                  STM.STM (TCPConnection x, IO ())
 makeConnection me addr st = do
   queue <- C.makeChannel 10000
   sentq <- STM.newTVar $ DS.empty
@@ -186,30 +189,30 @@ data TCPLogicException =
 instance CE.Exception TCPLogicException
 
 -- TCPTransport
-data TCPTransport =
-  TCPTransport { selfAddr :: TCPEntity
-               , openConns :: STM.TVar (M.Map TCPEntity TCPConnection)
-               , mAction :: (TCPTransport -> TCPConnection ->
+data TCPTransport x =
+  TCPTransport { selfAddr :: x
+               , openConns :: STM.TVar (M.Map x (TCPConnection x))
+               , mAction :: (TCPTransport x -> TCPConnection x ->
                              BS.ByteString -> Maybe (IO ()))
-               , eAction :: (TCPTransport -> TCPConnection ->
+               , eAction :: (TCPTransport x -> TCPConnection x ->
                              T.ConnException -> Maybe (IO ()))
                }
 
-sockAddr :: TCPTransport -> S.SockAddr
-sockAddr = entityAddr . selfAddr
+sockAddr :: TCPUEntity x => TCPTransport x -> S.SockAddr
+sockAddr = entityAddr . toTCPEntity . selfAddr
 
-family :: TCPTransport -> S.Family
-family = familyTCPEntity . selfAddr
+family ::TCPUEntity x => TCPTransport x -> S.Family
+family = familyTCPEntity . toTCPEntity . selfAddr
 
-makeTransport :: TCPEntity ->
-                 (TCPTransport -> TCPConnection ->
+makeTransport :: TCPUEntity x => x ->
+                 (TCPTransport x -> TCPConnection x ->
                   BS.ByteString -> Maybe (IO ())) ->
-                 (TCPTransport -> TCPConnection ->
+                 (TCPTransport x -> TCPConnection x ->
                   T.ConnException -> Maybe (IO ())) ->
-                 IO TCPTransport
+                 IO (TCPTransport x)
 makeTransport addr mAction eAction = do
   oConns <- STM.atomically $ STM.newTVar M.empty
-  sock <- S.socket (familyTCPEntity addr) S.Stream S.defaultProtocol
+  sock <- S.socket (familyTCPEntity $ toTCPEntity addr) S.Stream S.defaultProtocol
   cVar <- CM.newMVar sock
   return $ TCPTransport { selfAddr = addr
                         , openConns = oConns

@@ -68,24 +68,29 @@ instance DP.Serialize PayloadHeader
 instance NMessageFixed PayloadHeader where
   empty _ = PayloadHeader 0
 
-data TMessage = ReqClose
+data TMessage x = ReqClose
               | ConfClose
               | ConfOpen GSeq MSeq
-              | ReqOpen TCPEntity GSeq CSeq MSeq
+              | ReqOpen x GSeq CSeq MSeq
               | Payload MSeq MSeq BS.ByteString
               deriving (Show, Generic, Typeable)
-instance DP.Serialize TMessage
+instance DP.Serialize x => DP.Serialize (TMessage x)
 
-readMsg :: NS.Socket -> IO TMessage
-readMsg sock = do
+readMsg' :: TCPUEntity e => TCPTransport e ->
+            NS.Socket -> IO (TMessage e)
+readMsg' trans sock = do
   PayloadHeader len <- sget (undefined :: PayloadHeader) sock
   recvMsg len sock 
 
-writeMsg :: NS.Socket -> MSeq -> MSeq -> BS.ByteString -> IO ()
-writeMsg sock mseq toack msg = writeCont sock $ Payload mseq toack msg
+readMsg :: TCPUEntity e => TCPConnection e ->
+           NS.Socket -> IO (TMessage e)
+readMsg conn sock = do
+  PayloadHeader len <- sget (undefined :: PayloadHeader) sock
+  recvMsg len sock 
 
-writeCont :: NS.Socket -> TMessage -> IO ()
-writeCont sock act = do
+writeCont :: TCPUEntity e => TCPConnection e ->
+             NS.Socket -> TMessage e -> IO ()
+writeCont conn sock act = do
   bss <- return $ DP.encodeLazy act
   sput sock $ PayloadHeader $ BS.length bss
   safeSend sock bss
