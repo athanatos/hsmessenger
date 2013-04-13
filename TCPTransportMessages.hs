@@ -14,20 +14,15 @@ import qualified Control.Exception as CE
 import qualified Control.Concurrent.MVar as CM
 import Data.Typeable
 import GHC.Generics (Generic)
+import System.IO.Error
 
 import TCPTransportTypes
-
-data TCPException = 
-  SendErr |
-  RecvErr
-  deriving (Show, Typeable)
-instance CE.Exception TCPException
 
 safeSend :: NS.Socket -> BS.ByteString -> IO ()
 safeSend socket bs = do
   sent <- NSS.send socket bs
-  when (sent == 0)
-    (CE.throwIO SendErr >> return ())
+  when (sent == 0) $
+    ioError (userError "Send Error")
   if sent < (BS.length bs)
     then safeSend socket (BS.drop sent bs)
     else return ()
@@ -39,9 +34,9 @@ sendMsg socket x  = do
 recvMsg :: DP.Serialize x => Int64 -> NS.Socket -> IO x
 recvMsg size socket = do
   bs <- NSS.recv socket size
-  return $ case DP.decodeLazy bs of
-    Right x -> x
-    Left _ -> CE.throw $ RecvErr
+  case DP.decodeLazy bs of
+    Right x -> return x
+    Left _ -> ioError (userError "RecvError")
 
 class DP.Serialize x => NMessageFixed x where
   empty :: x -> x

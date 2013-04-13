@@ -120,13 +120,14 @@ _runIOTree (IOTree t) news = do
     sequence_ $ map (\x -> get >>= \y -> liftIO $ x y) (srOnExit st)
   return ()
 
-waitDone :: IOTree ()
+waitDone :: IOTree a
 waitDone = IOTree $ do
   state <- get
   liftIO $ atomically $ do
     done <- readTVar $ cStop $ srChild state
     when (not done) retry
-    return ()
+  srCont state ()
+  return (undefined :: a) -- can't happen
 
 maybeStop :: IOTree ()
 maybeStop = IOTree $ do

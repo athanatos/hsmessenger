@@ -22,6 +22,7 @@ import Control.Concurrent
 import Data.Int
 import Data.Maybe
 import Control.Monad
+import System.IO.Error
 
 import qualified Transport as T
 import qualified TCPTransportMessages as TM
@@ -31,9 +32,14 @@ import IOTree
 
 import TCPTransportTypes
 
-wrapIO :: TCPConnection $ IO a -> IOTree a
-wrapIO t = do
-  waitDone
+wrapIO :: TCPConnection -> IO a -> IOTree a
+wrapIO conn t = do
+  join $ liftIO $ catchIOError (t >>= return . return) $ \_ -> 
+    return $ do
+      x <- stopOrRun $ handleEvent (connStatus conn) TReset
+      liftIO x
+      (waitDone :: IOTree a)
+  
 
 -- States
 sInit gseq lseq trans = MState
@@ -51,15 +57,15 @@ sInit gseq lseq trans = MState
 sOpen gseq lseq trans conn = MState
   { msRun = do
        maybeStop
-       sock <- liftIO $ S.socket (family trans) S.Stream S.defaultProtocol
+       sock <- wrapIO conn $ S.socket (family trans) S.Stream S.defaultProtocol
        deferOnExit $ S.sClose sock
-       liftIO $ S.connect sock (entityAddr $ connPeer conn)
+       wrapIO conn $ S.connect sock (entityAddr $ connPeer conn)
        toack <- stopOrRun $ STM.readTVar (connLastRcvd conn)
-       liftIO $ TM.writeCont sock $ TM.ReqOpen (connHost conn) gseq lseq toack
-       resp <- liftIO $ TM.readMsg sock
+       wrapIO conn $ TM.writeCont sock $ TM.ReqOpen (connHost conn) gseq lseq toack
+       resp <- wrapIO conn $ TM.readMsg sock
        case resp of
          TM.ReqClose -> do
-           liftIO $ TM.writeCont sock TM.ConfClose
+           wrapIO conn $ TM.writeCont sock TM.ConfClose
            (stopOrRun $ handleEvent (connStatus conn) TReset) >>= liftIO
          TM.ConfOpen lseq mseq -> do
            stopOrRun $ advanceAckd conn mseq
@@ -83,7 +89,7 @@ sAccept gseq lseq mseq trans conn sock = MState
        deferOnExit $ S.sClose sock
        toack <- stopOrRun $
                 advanceAckd conn mseq >> STM.readTVar (connLastRcvd conn)
-       liftIO $ TM.writeCont sock $ TM.ConfOpen gseq toack
+       wrapIO conn $ TM.writeCont sock $ TM.ConfOpen gseq toack
        (stopOrRun $ handleEvent (connStatus conn) $ TAccepted) >>= liftIO
        waitDone
   , msTrans = \evt -> case evt of 
@@ -123,8 +129,7 @@ sRunning trans conn socket = MState
   }
   where
     reader = do
-      -- TODO: handle error
-      msg <- liftIO $ TM.readMsg socket
+      msg <- wrapIO conn $ TM.readMsg socket
       case msg of
         TM.Payload mseq ack payload -> do
           stopOrRun $ advanceAckd conn ack
@@ -134,12 +139,12 @@ sRunning trans conn socket = MState
           maybeStop
           reader
         TM.ReqClose -> do
-          liftIO $ TM.writeCont socket TM.ConfClose
+          wrapIO conn $ TM.writeCont socket TM.ConfClose
           (stopOrRun $ handleEvent (connStatus conn) $ TClosed) >>= liftIO
-        _ -> CE.throw TM.RecvErr
+        _ -> CE.throw $ TCPLogicException ("wrong msg")
     writer = do
       (seq, toack, msg) <- stopOrRun $ getNextMsg conn
-      liftIO $ TM.writeMsg socket seq toack msg
+      wrapIO conn $ TM.writeMsg socket seq toack msg
       writer
 
 doaccept :: TCPTransport -> S.Socket -> S.SockAddr -> IO ()
@@ -147,7 +152,7 @@ doaccept trans socket addr = do
   req <- TM.readMsg socket
   (entity, gseq, lseq, mseq) <- return $ case req of
     TM.ReqOpen entity gseq lseq mseq -> (entity, gseq, lseq, mseq)
-    _ -> CE.throw TM.RecvErr
+    _ -> CE.throw $ TCPLogicException ("wrong msg")
   join $ STM.atomically $ do
     cmap <- STM.readTVar (openConns trans)
     case M.lookup (TCPEntity addr) cmap of
