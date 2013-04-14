@@ -38,7 +38,7 @@ client self target port = do
   var <- CM.newMVar 0
   _ <- CM.takeMVar var
   msgr <- (MSGR.makeMessenger selfAddr [cAction var] [eAction])
-          :: IO (MSGR.Messenger TCPT.TCPTransport Msg)
+          :: IO (MSGR.Messenger (TCPT.TCPTransport TCPT.TCPEntity) Msg)
   targetAddr <- TCPT.tcpEntityFromStrWPort target port
   MSGR.queueMessageEntity msgr targetAddr
     (Msg { msgNum = 0, msgContents = "Ping" } )
@@ -49,7 +49,7 @@ server :: String -> Int -> IO ()
 server self port = do
   selfAddr <- TCPT.tcpEntityFromStrWPort self port
   msgr <- (MSGR.makeMessenger selfAddr [sAction] [eAction])
-          :: IO (MSGR.Messenger TCPT.TCPTransport Msg)
+          :: IO (MSGR.Messenger (TCPT.TCPTransport TCPT.TCPEntity) Msg)
   MSGR.bind msgr
 
 main = do

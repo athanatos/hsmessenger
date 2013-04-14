@@ -1,4 +1,4 @@
-{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE TypeFamilies, RankNTypes #-}
 module Messenger ( Messenger
                  , makeMessenger
                  , bind
@@ -28,8 +28,8 @@ data Messenger t a =
   { getTransport :: t
   }
 
-makeMessenger :: T.Transport t => DP.Binary a =>
-                 T.Entity t ->
+makeMessenger :: T.Transport t e => DP.Binary a =>
+                 e ->
                  [(Messenger t a -> T.Connection t -> a -> Maybe (IO ()))] ->
                  [(Messenger t a -> T.Connection t ->
                    T.ConnException -> Maybe (IO ()))] ->
@@ -55,16 +55,16 @@ makeMessenger addr _mActions _eActions =
      T.startTransport trans
      return $ Messenger { getTransport = trans }
 
-bind :: T.Transport t => DP.Binary a => Messenger t a -> IO ()
+bind :: T.Transport t e => DP.Binary a => Messenger t a -> IO ()
 bind msgr = do
   T.bind (getTransport msgr)
 
-queueMessageEntity :: T.Transport t => DP.Binary a => 
-                      Messenger t a -> T.Entity t -> a -> IO ()
+queueMessageEntity :: T.Transport t e => DP.Binary a => 
+                      Messenger t a -> e -> a -> IO ()
 queueMessageEntity msger entity msg = do
   T.queueMessageEntity (getTransport msger) entity (DP.encode msg)
 
-queueMessageConn :: T.Transport t => DP.Binary a =>
+queueMessageConn :: T.Transport t e => DP.Binary a =>
                     Messenger t a -> T.Connection t -> a -> IO ()
 queueMessageConn messenger conn message =
   T.queueMessage (getTransport messenger) conn (DP.encode message)

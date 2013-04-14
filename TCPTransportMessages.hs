@@ -17,6 +17,7 @@ import GHC.Generics (Generic)
 import System.IO.Error
 
 import TCPTransportTypes
+import qualified Transport as T
 
 safeSend :: NS.Socket -> BS.ByteString -> IO ()
 safeSend socket bs = do
@@ -68,29 +69,21 @@ instance DP.Serialize PayloadHeader
 instance NMessageFixed PayloadHeader where
   empty _ = PayloadHeader 0
 
-data TMessage x = ReqClose
+data TMessage = ReqClose
               | ConfClose
               | ConfOpen GSeq MSeq
-              | ReqOpen x GSeq CSeq MSeq
+              | ReqOpen TCPAddr T.TransType GSeq CSeq MSeq BS.ByteString
               | Payload MSeq MSeq BS.ByteString
-              deriving (Show, Generic, Typeable)
-instance DP.Serialize x => DP.Serialize (TMessage x)
+              deriving (Show, Generic)
+instance DP.Serialize TMessage
 
-readMsg' :: TCPUEntity e => TCPTransport e ->
-            NS.Socket -> IO (TMessage e)
-readMsg' trans sock = do
+readMsg :: NS.Socket -> IO TMessage
+readMsg sock = do
   PayloadHeader len <- sget (undefined :: PayloadHeader) sock
   recvMsg len sock 
 
-readMsg :: TCPUEntity e => TCPConnection e ->
-           NS.Socket -> IO (TMessage e)
-readMsg conn sock = do
-  PayloadHeader len <- sget (undefined :: PayloadHeader) sock
-  recvMsg len sock 
-
-writeCont :: TCPUEntity e => TCPConnection e ->
-             NS.Socket -> TMessage e -> IO ()
-writeCont conn sock act = do
+writeCont :: NS.Socket -> TMessage -> IO ()
+writeCont sock act = do
   bss <- return $ DP.encodeLazy act
   sput sock $ PayloadHeader $ BS.length bss
   safeSend sock bss
