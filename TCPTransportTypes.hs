@@ -58,13 +58,12 @@ familyTCPAddr addr = case addr of
 
 tcpEntityFromStrWPort :: String -> Int -> IO TCPAddr
 tcpEntityFromStrWPort str port = do
-  addrInfo:_ <- S.getAddrInfo Nothing (Just str) Nothing
-  return $ setPort (S.addrAddress addrInfo) $ fromIntegral port
+  addrInfo:_ <- S.getAddrInfo Nothing (Just str) (Just $ show port)
+  return $ S.addrAddress addrInfo
 
 tcpEntityFromStr :: String -> IO TCPAddr
 tcpEntityFromStr str = do
   addrInfo:rs <- S.getAddrInfo Nothing (Just str) Nothing
-  print (show addrInfo)
   return $ S.addrAddress addrInfo
 
 makeTuple :: TCPAddr ->
