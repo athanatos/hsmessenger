@@ -72,7 +72,7 @@ instance NMessageFixed PayloadHeader where
 data TMessage = ReqClose
               | ConfClose
               | ConfOpen GSeq MSeq
-              | ReqOpen TCPAddr T.TransType GSeq CSeq MSeq BS.ByteString
+              | ReqOpen TCPAddr T.TransType GSeq CSeq MSeq
               | Payload MSeq MSeq BS.ByteString
               deriving (Show, Generic)
 instance DP.Serialize TMessage

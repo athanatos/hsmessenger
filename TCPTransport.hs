@@ -23,7 +23,6 @@ import Data.Int
 import Data.Maybe
 import Control.Monad
 import System.IO.Error
-import Data.Monoid
 import qualified Data.Serialize as DP
 
 import qualified Transport as T
@@ -53,7 +52,35 @@ sInit gseq lseq trans = MState
        _ -> CE.throw $ TCPLogicException ("wrong state" ++ (show evt))
   , msSubState = Nothing
   }
-       
+
+onReset gseq lseq trans conn =
+  case (T.faultPolicy . tInit) trans trans conn of
+    T.Reconnect -> case connType conn of
+      T.Client -> Trans $ sClose gseq lseq trans conn
+      T.Server -> Trans $ sOpen gseq (lseq + 1) trans conn
+    T.Drop -> Trans $ sClose gseq lseq trans conn
+    T.WaitAccept -> Trans $ sWaitAccept gseq lseq trans conn
+
+sClose gseq lseq trans conn = MState
+  { msRun = do
+       join $ stopOrRun $ do
+         removeConnection trans (connPAddr conn)
+         stopMachine (connStatus conn)
+  , msTrans = \evt -> case evt of
+       TAccept _ entity sock _ r_lseq mseq ->
+         Trans $ sAccept gseq r_lseq mseq trans conn sock
+       _ -> Forward
+  , msSubState = Nothing
+  }
+
+sWaitAccept gseq lseq trans conn = MState
+  { msRun = return ()
+  , msTrans = \evt -> case evt of
+       TAccept _ entity sock _ r_lseq mseq ->
+         Trans $ sAccept gseq r_lseq mseq trans conn sock
+       _ -> Forward
+  , msSubState = Nothing
+  }
 
 sOpen gseq lseq trans conn = MState
   { msRun = do
@@ -65,7 +92,7 @@ sOpen gseq lseq trans conn = MState
        wrapIO conn $
          TM.writeCont sock $
            TM.ReqOpen (selfAddr trans) ((T.transType . tInit) trans)
-             gseq lseq toack BS.empty
+             gseq lseq toack
        resp <- wrapIO conn $ TM.readMsg sock
        case resp of
          TM.ReqClose -> do
@@ -78,7 +105,7 @@ sOpen gseq lseq trans conn = MState
          _ -> CE.throw $ TCPLogicException "sOpen can't get Payload"
        waitDone
   , msTrans = \evt -> case evt of
-       TReset -> Trans $ sOpen gseq (lseq + 1) trans conn
+       TReset -> onReset gseq lseq trans conn
        TAccept _ entity sock _ r_lseq mseq ->
          case compare (lseq, entity) (r_lseq, selfAddr trans) of
            EQ -> CE.throw $ TCPLogicException "same entity??"
@@ -97,7 +124,7 @@ sAccept gseq lseq mseq trans conn sock = MState
        (stopOrRun $ handleEvent (connStatus conn) $ TAccepted) >>= liftIO
        waitDone
   , msTrans = \evt -> case evt of 
-       TReset -> Trans $ sOpen gseq (lseq + 1) trans conn
+       TReset -> onReset gseq lseq trans conn
        TAccept _ entity sock _ r_lseq mseq ->
          case compare (lseq, selfAddr trans) (r_lseq, entity) of
            EQ -> CE.throw $ TCPLogicException "same entity??"
@@ -136,11 +163,10 @@ sRunning trans conn socket = MState
       msg <- wrapIO conn $ TM.readMsg socket
       case msg of
         TM.Payload mseq ack payload -> do
-          stopOrRun $ advanceAckd conn ack
-          liftIO $
+          stopOrRun $ do
+            advanceAckd conn ack
             ((T.onMsgRec . tInit) trans) trans conn payload
-          stopOrRun $ advanceRcvd conn mseq
-          maybeStop
+            advanceRcvd conn mseq
           reader
         TM.ReqClose -> do
           wrapIO conn $ TM.writeCont socket TM.ConfClose
@@ -151,18 +177,21 @@ sRunning trans conn socket = MState
       wrapIO conn $ TM.writeCont socket $ TM.Payload seq toack msg
       writer
 
-doaccept :: (Monoid s, Show s) => TCPTransport s -> S.Socket -> S.SockAddr -> IO ()
+doaccept :: (Show s) => TCPTransport s -> S.Socket -> S.SockAddr -> IO ()
 doaccept trans socket addr = do
   req <- TM.readMsg socket
-  (entity, ttype, gseq, lseq, mseq, priv) <- return $ case req of
-    TM.ReqOpen entity ttype gseq lseq mseq priv ->
-      (entity, ttype, gseq, lseq, mseq, priv)
+  (entity, ttype, gseq, lseq, mseq) <- return $ case req of
+    TM.ReqOpen entity ttype gseq lseq mseq ->
+      (entity, ttype, gseq, lseq, mseq)
     _ -> CE.throw $ TCPLogicException ("wrong msg")
   join $ STM.atomically $ do
     cmap <- STM.readTVar (openConns trans)
     case M.lookup entity cmap of
       Nothing -> do
-        (conn, act) <- makeConnection entity mempty ttype $
+        priv <- ((T.handleConnect . tInit) trans trans entity)
+        (conn, act) <- makeConnection entity
+                       priv
+                       ttype $
                        sInit gseq lseq trans
         act2 <-
           handleEvent (connStatus conn) $
@@ -171,7 +200,7 @@ doaccept trans socket addr = do
       Just _ -> do
         return $ return ()
 
-accepter :: (Monoid s, Show s) => TCPTransport s -> IO ()
+accepter :: (Show s) => TCPTransport s -> IO ()
 accepter trans = do
   sock <- S.socket (family trans) S.Stream S.defaultProtocol
   S.bindSocket sock (sockAddr trans)
@@ -181,18 +210,19 @@ accepter trans = do
     forkIO $ doaccept trans csock caddr
     return ()
 
-bindTransport :: (Monoid s, Show s) => TCPTransport s -> IO ()
+bindTransport :: (Show s) => TCPTransport s -> IO ()
 bindTransport trans = do
   accepter trans
 
-getConnection :: (Monoid s, Show s) => TCPTransport s ->
+getConnection :: (Show s) => TCPTransport s ->
                  TCPAddr -> IO (TCPConnection s)
 getConnection trans peer = do
   join $ STM.atomically $ do
     cmap <- STM.readTVar (openConns trans)
     case M.lookup peer cmap of
       Nothing -> do
-        (conn, act) <- makeConnection peer mempty T.Server $ sInit 0 0 trans
+        priv <- ((T.handleConnect . tInit) trans trans peer)
+        (conn, act) <- makeConnection peer priv T.Server $ sInit 0 0 trans
         act2 <- handleEvent (connStatus conn) $ TDoOpen conn
         return $ act >> act2 >> return conn
       Just x -> return $ return x
@@ -202,18 +232,23 @@ queueMessage :: TCPTransport s -> TCPConnection s ->
 queueMessage trans conn msg = STM.atomically $ do
   queueOnConnection conn msg
 
-queueMessageEntity :: (Show s, Monoid s) => TCPTransport s ->
+queueMessageEntity :: (Show s) => TCPTransport s ->
                       TCPAddr -> BS.ByteString -> IO ()
 queueMessageEntity trans peer msg = do
   conn <- getConnection trans peer
   queueMessage trans conn msg
 
-instance (Monoid s, Show s, DP.Serialize s) =>
+startTransport :: (Show s) => TCPTransport s -> IO ()
+startTransport trans = case ((T.transType . tInit) trans) of
+  T.Client -> return ()
+  T.Server -> (forkIO $ accepter trans) >> return ()
+
+instance (Show s, DP.Serialize s) =>
          T.Transport (TCPTransport s) s where
   type Connection (TCPTransport s) s = TCPConnection s
   type Addr (TCPTransport s) = TCPAddr
   makeTransport = makeTransport
-  startTransport = \x -> return ()
+  startTransport = startTransport
   getConnection = getConnection
   queueMessage = queueMessage
   queueMessageEntity = queueMessageEntity

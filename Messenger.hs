@@ -1,12 +1,12 @@
-{-# LANGUAGE TypeFamilies, RankNTypes #-}
+{-# LANGUAGE TypeFamilies, RankNTypes, FlexibleContexts #-}
 module Messenger ( Messenger
                  , makeMessenger
-                 , bind
+                 , start
                  , queueMessageEntity
                  , queueMessageConn
                  ) where
 
-import qualified Data.Binary as DP
+import qualified Data.Serialize as DP
 import Data.Maybe
 import qualified Data.ByteString.Lazy as BS
 import qualified Transport as T
@@ -24,49 +24,63 @@ import Channel
 
 -- Messenger
 data Messenger t a =
-  Messenger
-  { getTransport :: t
-  }
+  Messenger { getTransport :: t
+            }
 
-makeMessenger :: T.Transport t e => DP.Binary a =>
-                 e ->
-                 [(Messenger t a -> T.Connection t -> a -> Maybe (IO ()))] ->
-                 [(Messenger t a -> T.Connection t ->
-                   T.ConnException -> Maybe (IO ()))] ->
-                 IO (Messenger t a)
-makeMessenger addr _mActions _eActions = 
+data MConfig t a = 
+  MConfig { transType :: T.TransType
+          , msgHandler :: [Messenger t a -> T.Connection t () ->
+                           a -> Maybe (STM ())]
+          , onError :: [Messenger t a -> T.Connection t () ->
+                        T.ConnException -> Maybe (STM ())]
+          , faultPolicy :: Messenger t a -> T.Connection t () -> T.ReactOnFault
+          }
+
+makeMessenger :: (T.Transport t (), DP.Serialize a) =>
+                 T.Addr t -> MConfig t a -> IO (Messenger t a)
+makeMessenger addr mconf = 
   let
     firstJust [] = Nothing
     firstJust (x:xs) = case x of
       Just x -> Just x
       Nothing -> firstJust xs
 
-    collapse ms trans conn bs = firstJust [x trans conn bs | x <- ms]
+    collapse ms trans conn bs = case firstJust [x trans conn bs | x <- ms] of
+      Nothing -> return ()
+      Just x -> x
 
-    decodify x = \t conn bs ->
-      x (Messenger { getTransport = t }) conn (DP.decode bs)
+    decodify x = \t conn bs -> case (DP.decodeLazy bs) of
+      Left err -> Nothing
+      Right y -> x (Messenger { getTransport = t }) conn y
+      
 
     eActions = collapse $
-               [\t -> y (Messenger { getTransport = t }) | y <- _eActions]
-    mActions = collapse $ map decodify _mActions
+               [\t -> y (Messenger { getTransport = t }) | y <- onError mconf]
+    mActions = collapse $ map decodify (msgHandler mconf)
   in
    do
-     trans <- T.makeTransport addr mActions eActions
+     trans <- T.makeTransport addr $ T.TInit {
+       T.transType = transType mconf,
+       T.onMsgRec = mActions,
+       T.onError = eActions,
+       T.faultPolicy = \t -> (faultPolicy mconf) $ Messenger { getTransport = t},
+       T.handleConnect = \_ _ -> return ()
+       }
      T.startTransport trans
      return $ Messenger { getTransport = trans }
 
-bind :: T.Transport t e => DP.Binary a => Messenger t a -> IO ()
-bind msgr = do
-  T.bind (getTransport msgr)
+start :: (T.Transport t e, DP.Serialize a) => Messenger t a -> IO ()
+start msgr = do
+  T.startTransport (getTransport msgr)
 
-queueMessageEntity :: T.Transport t e => DP.Binary a => 
-                      Messenger t a -> e -> a -> IO ()
+queueMessageEntity :: (T.Transport t (), DP.Serialize a) => 
+                      Messenger t a -> T.Addr t -> a -> IO ()
 queueMessageEntity msger entity msg = do
-  T.queueMessageEntity (getTransport msger) entity (DP.encode msg)
+  T.queueMessageEntity (getTransport msger) entity (DP.encodeLazy msg)
 
-queueMessageConn :: T.Transport t e => DP.Binary a =>
-                    Messenger t a -> T.Connection t -> a -> IO ()
+queueMessageConn :: (T.Transport t (), DP.Serialize a) =>
+                    Messenger t a -> T.Connection t () -> a -> IO ()
 queueMessageConn messenger conn message =
-  T.queueMessage (getTransport messenger) conn (DP.encode message)
+  T.queueMessage (getTransport messenger) conn (DP.encodeLazy message)
 
 

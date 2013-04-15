@@ -193,6 +193,11 @@ sockAddr = selfAddr
 family ::TCPTransport s -> S.Family
 family = familyTCPAddr . selfAddr
 
+removeConnection :: TCPTransport s -> TCPAddr -> STM.STM ()
+removeConnection trans addr = do
+  modifyTVar (openConns trans) $ M.delete addr
+  return ()
+
 makeTransport :: TCPAddr ->
                  T.TInit (TCPTransport s) s ->
                  IO (TCPTransport s)

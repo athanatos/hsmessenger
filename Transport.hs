@@ -1,5 +1,5 @@
 {-# LANGUAGE TypeFamilies, MultiParamTypeClasses, 
-TemplateHaskell, DeriveGeneric #-}
+TemplateHaskell, DeriveGeneric, FunctionalDependencies #-}
 -- Messenger abstraction
 module Transport ( ConnException
                  , Transport
@@ -13,16 +13,17 @@ module Transport ( ConnException
                  , queueMessageEntity
                  , ConnID
                  , connToEntity
-                 , ReactOnFault
-                 , TInit
+                 , ReactOnFault (Drop, Reconnect, WaitAccept)
+                 , TInit (TInit)
                  , transType
                  , onMsgRec
                  , onError
-                 , handleFault
+                 , faultPolicy
                  , connToPrivate
+                 , handleConnect
                  ) where
 
-import Data.Monoid
+import qualified Control.Concurrent.STM as STM
 import Data.Int
 import Data.ByteString.Lazy
 import Data.Serialize
@@ -33,7 +34,7 @@ data ConnException  = Closed | Reset
 
 type ConnID = Int64
 
-data ReactOnFault = Drop | Reconnect Int64 | WaitAccept
+data ReactOnFault = Drop | Reconnect | WaitAccept
 
 data TransType = Client | Server
                deriving (Eq, Show, Generic)
@@ -41,7 +42,7 @@ instance Serialize TransType
 isClient = (== Client)
 isServer = (== Server)
 
-class (Serialize s, Monoid s) => Transport m s where
+class (Serialize s) => Transport m s | m -> s where
   type Connection m s :: *
   type Addr m :: *
   makeTransport :: Addr m -> TInit m s -> IO m
@@ -57,8 +58,8 @@ class (Serialize s, Monoid s) => Transport m s where
 
 data TInit m s =
   TInit { transType :: TransType
-        , onMsgRec :: m -> Connection m s -> ByteString -> IO ()
-        , onError :: m -> Connection m s -> ConnException -> IO ()
-        , handleFault :: m -> Connection m s -> Int64 -> ReactOnFault
-        , handlePrivate :: m -> Connection m s -> ByteString -> s
+        , onMsgRec :: m -> Connection m s -> ByteString -> STM.STM ()
+        , onError :: m -> Connection m s -> ConnException -> STM.STM ()
+        , faultPolicy :: m -> Connection m s -> ReactOnFault
+        , handleConnect :: m -> Addr m -> STM.STM s
         }

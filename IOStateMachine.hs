@@ -12,6 +12,7 @@ module IOStateMachine ( Reaction(Forward, Drop, Handle, Trans)
                       , handleEventIO
                       , createMachine
                       , createMachineIO
+                      , stopMachine
                       ) where
 
 import Control.Concurrent.STM
@@ -50,6 +51,13 @@ createMachine st = do
   sm <- return $ StateMachine ars
   todo <- _enterState sm [] [] st
   return (sm, todo)
+
+stopMachine :: StateMachine e -> STM (IOTree ())
+stopMachine sm = do
+  st <- readTVar (smStack sm)
+  cleanup <- return $ sequence_ $ map _arCleanup st
+  writeTVar (smStack sm) []
+  return cleanup
 
 createMachineIO :: MEvent e => MState e -> IO (StateMachine e)
 createMachineIO st = do
