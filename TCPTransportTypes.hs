@@ -160,7 +160,7 @@ makeConnection :: TCPAddr -> s -> T.TransType -> SM.MState (TCPEvt s) ->
 makeConnection addr priv ptype st = do
   queue <- C.makeChannel 10000
   sentq <- STM.newTVar $ DS.empty
-  (sm, todo) <- SM.createMachine st
+  (sm, todo) <- SM.createMachine [show addr] st
   recvd <- STM.newTVar 0
   qd <- STM.newTVar 0
   acked <- STM.newTVar 0

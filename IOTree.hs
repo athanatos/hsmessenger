@@ -11,12 +11,15 @@ module IOTree ( IOTree
               , runIOTree
               , spawnIOTree
               , lSpawnIOTree
+              , lSpawnNamedIOTree
               , maybeStop
               , waitDone
               , stopOrRun
               , deferOnExit
               , spawn
               , liftIO
+              , wDebug
+              , wError
               ) where
 
 import Control.Concurrent.STM
@@ -28,6 +31,7 @@ import Control.Monad
 import Control.Monad.Cont
 import Control.Monad.Reader.Class
 import Control.Monad.State.Lazy
+import System.Log.Logger
 
 type SR = StateT SRState (ContT () IO)
 
@@ -65,7 +69,15 @@ data SRState =
           , srCont :: () -> SR ()
           , srOnExit :: [SRState -> IO ()]
           , srCMap :: TVar (M.Map ThreadId Child)
+          , srName :: [String]
           }
+_getName :: SR String
+_getName = do
+  st <- get
+  case srName st of
+    [] -> return ""
+    x:xs -> return $ concat $ x : (map ('.' :) xs)
+
 _makeEmptySRState :: STM SRState
 _makeEmptySRState = do
   c <- _makeEmptyChild
@@ -74,6 +86,7 @@ _makeEmptySRState = do
                    , srCont = return
                    , srOnExit = []
                    , srCMap = a
+                   , srName = []
                    }
 
 _insertTid sr tid child = do
@@ -100,15 +113,29 @@ _runSR t s = (`runContT` return) $ (`evalStateT` s) $ t
 
 runIOTree :: IOTree () -> IO ()
 runIOTree b = atomically _makeEmptySRState >>= _runIOTree b >> return ()
+
+lSpawnNamedIOTree :: [String] -> IOTree () -> STM (Child, IO ())
+lSpawnNamedIOTree tag b = do
+  st <- _makeEmptySRState >>= (\x -> return $ x { srName = tag })
+  return (srChild st, (forkIO $ _runIOTree b st) >> return ())
+
 lSpawnIOTree :: IOTree () -> STM (Child, IO ())
 lSpawnIOTree b = do
   st <- _makeEmptySRState
   return (srChild st, (forkIO $ _runIOTree b st) >> return ())
+
 spawnIOTree :: IOTree () -> IO (Child, ThreadId)
 spawnIOTree b = do
   st <- atomically _makeEmptySRState
   tid <- forkIO $ _runIOTree b st
   return $ (srChild st, tid)
+
+spawnNamedIOTree :: [String] -> IOTree () -> IO (Child, ThreadId)
+spawnNamedIOTree name t = do
+  st <- (atomically _makeEmptySRState) >>= (\x -> return $ x { srName = name })
+  tid <- forkIO $ _runIOTree t st
+  return $ (srChild st, tid)
+
 _runIOTree (IOTree t) news = do
   (`_runSR` news) $ do
     callCC $ \x -> do
@@ -161,7 +188,7 @@ spawn :: IOTree () -> IOTree Child
 spawn t = IOTree $ do
   state <- get
   gate <- liftIO $ atomically $ newTVar False
-  (newc, tid) <- liftIO $ spawnIOTree $ do
+  (newc, tid) <- liftIO $ spawnNamedIOTree (srName state) $ do
     liftIO $ atomically $ do
       go <- readTVar gate
       when (not go) retry
@@ -169,3 +196,13 @@ spawn t = IOTree $ do
   liftIO $ atomically $ _insertTid state tid newc
   liftIO $ atomically $ writeTVar gate True
   return newc
+
+wDebug :: String -> IOTree ()
+wDebug msg = IOTree $ do
+  tag <- _getName
+  liftIO $ debugM tag (tag ++ ": " ++ msg)
+
+wError :: String -> IOTree ()
+wError msg = IOTree $ do
+  tag <- _getName
+  liftIO $ errorM tag (tag ++ ": " ++ msg)

@@ -51,6 +51,7 @@ sInit gseq lseq trans = MState
          Trans $ sAccept gseq lseq mseq trans conn sock
        _ -> CE.throw $ TCPLogicException ("wrong state" ++ (show evt))
   , msSubState = Nothing
+  , msDesc = "(sInit)"
   }
 
 onReset gseq lseq trans conn =
@@ -71,6 +72,7 @@ sClose gseq lseq trans conn = MState
          Trans $ sAccept gseq r_lseq mseq trans conn sock
        _ -> Forward
   , msSubState = Nothing
+  , msDesc = "(sClose)"
   }
 
 sWaitAccept gseq lseq trans conn = MState
@@ -80,6 +82,7 @@ sWaitAccept gseq lseq trans conn = MState
          Trans $ sAccept gseq r_lseq mseq trans conn sock
        _ -> Forward
   , msSubState = Nothing
+  , msDesc = "(sWaitAccept)"
   }
 
 sOpen gseq lseq trans conn = MState
@@ -113,6 +116,7 @@ sOpen gseq lseq trans conn = MState
            GT -> Trans $ sAccept gseq r_lseq mseq trans conn sock
        _ -> CE.throw $ TCPLogicException ("wrong evt sOpen " ++ (show evt))
   , msSubState = Just $ sWaitSocket trans conn
+  , msDesc = "(sOpen)"
   }
 
 sAccept gseq lseq mseq trans conn sock = MState
@@ -131,6 +135,7 @@ sAccept gseq lseq mseq trans conn sock = MState
            LT -> Drop
            GT -> Trans $ sAccept gseq r_lseq mseq trans conn sock
   , msSubState = Just $ sWaitReady trans conn sock
+  , msDesc = "(sAccept)"
   }
 
 sWaitReady trans conn socket = MState
@@ -140,6 +145,7 @@ sWaitReady trans conn socket = MState
        TAccepted -> Trans $ sRunning trans conn socket
        _ -> Forward
   , msSubState = Nothing
+  , msDesc = "(sWaitReady)"
   }
 
 sWaitSocket trans conn = MState
@@ -148,6 +154,7 @@ sWaitSocket trans conn = MState
        TOpened sock -> Trans $ sRunning trans conn sock
        _ -> Forward
   , msSubState = Nothing
+  , msDesc = "(sWaitSocket)"
   }
 
 sRunning trans conn socket = MState
@@ -157,12 +164,15 @@ sRunning trans conn socket = MState
        waitDone
   , msTrans = \_ -> Forward
   , msSubState = Nothing
+  , msDesc = "(sRunning)"
   }
   where
     reader = do
+      wDebug "reader"
       msg <- wrapIO conn $ TM.readMsg socket
       case msg of
         TM.Payload mseq ack payload -> do
+          wDebug "reader -- got Payload"
           stopOrRun $ do
             advanceAckd conn ack
             ((T.onMsgRec . tInit) trans) trans conn payload
@@ -173,6 +183,7 @@ sRunning trans conn socket = MState
           (stopOrRun $ handleEvent (connStatus conn) $ TClosed) >>= liftIO
         _ -> CE.throw $ TCPLogicException ("wrong msg")
     writer = do
+      wDebug "writer"
       (seq, toack, msg) <- stopOrRun $ getNextMsg conn
       wrapIO conn $ TM.writeCont socket $ TM.Payload seq toack msg
       writer
@@ -184,21 +195,26 @@ doaccept trans socket addr = do
     TM.ReqOpen entity ttype gseq lseq mseq ->
       (entity, ttype, gseq, lseq, mseq)
     _ -> CE.throw $ TCPLogicException ("wrong msg")
+  raddr <- return $ case ttype of
+    T.Client -> addr
+    T.Server -> entity
   join $ STM.atomically $ do
     cmap <- STM.readTVar (openConns trans)
-    case M.lookup entity cmap of
+    case M.lookup raddr cmap of
       Nothing -> do
         priv <- ((T.handleConnect . tInit) trans trans entity)
-        (conn, act) <- makeConnection entity
+        (conn, act) <- makeConnection raddr
                        priv
                        ttype $
                        sInit gseq lseq trans
         act2 <-
           handleEvent (connStatus conn) $
           TAccept conn entity socket gseq lseq mseq
+        STM.writeTVar (openConns trans) (M.insert raddr conn cmap)
         return (act >> act2)
-      Just _ -> do
-        return $ return ()
+      Just conn -> do
+        handleEvent (connStatus conn) $
+          TAccept conn entity socket gseq lseq mseq
 
 accepter :: (Show s) => TCPTransport s -> IO ()
 accepter trans = do

@@ -73,7 +73,6 @@ makeMessenger addr mconf =
        T.faultPolicy = \t -> (faultPolicy mconf) $ Messenger { getTransport = t},
        T.handleConnect = \t -> (handleConnect mconf) $ Messenger { getTransport = t}
        }
-     T.startTransport trans
      return $ Messenger { getTransport = trans }
 
 start :: (T.Transport t, DP.Serialize a) => Messenger t a -> IO ()

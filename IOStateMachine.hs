@@ -6,7 +6,7 @@ ExistentialQuantification,
 FunctionalDependencies #-}
 module IOStateMachine ( Reaction(Forward, Drop, Handle, Trans)
                       , MEvent
-                      , MState(MState, msRun, msTrans, msSubState)
+                      , MState(MState, msRun, msTrans, msSubState, msDesc)
                       , StateMachine
                       , handleEvent
                       , handleEventIO
@@ -33,7 +33,10 @@ data MState e =
   MState { msRun :: IOTree ()
          , msTrans :: e -> Reaction e
          , msSubState :: Maybe (MState e)
+         , msDesc :: String
          }
+instance Show (MState e) where
+  show = msDesc
 
 data ActivationRecord e =
   ActivationRecord { _arState :: MState e
@@ -43,12 +46,13 @@ _arMapEvent = msTrans . _arState
 
 data StateMachine e =
   StateMachine { smStack :: TVar [ActivationRecord e]
+               , smName :: [String]
                }
 
-createMachine :: MState e -> STM (StateMachine e, IO ())
-createMachine st = do
+createMachine :: [String] -> MState e -> STM (StateMachine e, IO ())
+createMachine name st = do
   ars <- newTVar []
-  sm <- return $ StateMachine ars
+  sm <- return $ StateMachine ars name
   todo <- _enterState sm [] [] st
   return (sm, todo)
 
@@ -59,9 +63,9 @@ stopMachine sm = do
   writeTVar (smStack sm) []
   return cleanup
 
-createMachineIO :: MEvent e => MState e -> IO (StateMachine e)
-createMachineIO st = do
-  (sm, todo) <- atomically $ createMachine st
+createMachineIO :: MEvent e => [String] -> MState e -> IO (StateMachine e)
+createMachineIO name st = do
+  (sm, todo) <- atomically $ createMachine name st
   todo
   return sm
 
@@ -86,7 +90,8 @@ handleEventIO sm ev = join $ atomically $ handleEvent sm ev
 _enterState :: StateMachine e -> [ActivationRecord e] -> [ActivationRecord e] ->
                MState e -> STM (IO ())
 _enterState sm done notdone state = do
-  setup <- setupRun $ subSt state
+  sts <- return $ subSt state
+  setup <- setupRun (zip (tail $ reverse $ tails (map msDesc sts)) sts)
   ars <- return $ toArs setup
   writeTVar (smStack sm) ((map fst ars) ++ notdone)
   return $ do
@@ -96,8 +101,13 @@ _enterState sm done notdone state = do
     subSt st = reverse $ (st :) $ (`unfoldr` st) $ \x -> do
       sub <- (msSubState x)
       return (sub, sub)
-    setupRun sts = sequence $ (`map` sts) $ \x -> do
-      (child, t) <- lSpawnIOTree $ msRun x
+    setupRun sts = sequence $ (`map` sts) $ \(name, x) -> do
+      (child, t) <- lSpawnNamedIOTree
+                    ((smName sm) ++
+                     (reverse $ map (msDesc . _arState) notdone) ++
+                     (reverse name)) $ do
+        wDebug "Entering State"
+        msRun x
       return (x, (liftIO $ atomically $ stopChild child, t))
     toArs =
       map (\(st, (cleanup, run)) -> (ActivationRecord st cleanup, run))

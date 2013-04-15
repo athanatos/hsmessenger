@@ -14,6 +14,8 @@ import Control.Concurrent.STM.TChan
 import Control.Concurrent.STM
 import Control.Concurrent
 import Control.Monad
+import System.Log.Logger
+import Debug.Trace
 
 data Msg =
   Msg { msgNum      :: Int64
@@ -54,7 +56,6 @@ client self target port = do
               MSGR.faultPolicy = \_ _ -> T.Reconnect
               }
           ) :: IO (MSGR.Messenger (TCPT.TCPTransport ()) Msg)
-  MSGR.start msgr
   targetAddr <- TCPT.tcpEntityFromStrWPort target port
   MSGR.queueMessageEntity msgr targetAddr
     (Msg { msgNum = 0, msgContents = "Ping" } )
@@ -79,6 +80,7 @@ server self port = do
   return ()
 
 main = do
+  updateGlobalLogger "" $ setLevel DEBUG
   args <- getArgs
   case args of
     ["client", self, shost, sport] -> client self shost (read sport)
