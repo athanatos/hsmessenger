@@ -1,11 +1,12 @@
 {-# LANGUAGE TypeFamilies, MultiParamTypeClasses, 
-TemplateHaskell, DeriveGeneric, FunctionalDependencies #-}
+TemplateHaskell, DeriveGeneric #-}
 -- Messenger abstraction
 module Transport ( ConnException
                  , Transport
                  , Connection
                  , TransType (Client, Server)
                  , Addr
+                 , Priv
                  , makeTransport
                  , startTransport
                  , getConnection
@@ -42,24 +43,25 @@ instance Serialize TransType
 isClient = (== Client)
 isServer = (== Server)
 
-class (Serialize s) => Transport m s | m -> s where
-  type Connection m s :: *
+class Transport m where
+  type Connection m :: *
   type Addr m :: *
-  makeTransport :: Addr m -> TInit m s -> IO m
+  type Priv m :: *
+  makeTransport :: Addr m -> TInit m -> IO m
 
-  getConnection :: m -> Addr m -> IO (Connection m s)
-  connToEntity :: Connection m s -> Addr m
-  connToPrivate :: Connection m s -> s
+  getConnection :: m -> Addr m -> IO (Connection m)
+  connToEntity :: Connection m -> Addr m
+  connToPrivate :: Connection m -> Priv m
 
-  queueMessage  :: m -> Connection m s -> ByteString -> IO ()
+  queueMessage  :: m -> Connection m -> ByteString -> IO ()
   queueMessageEntity  :: m -> Addr m -> ByteString -> IO ()
 
   startTransport :: m -> IO ()
 
-data TInit m s =
+data TInit m =
   TInit { transType :: TransType
-        , onMsgRec :: m -> Connection m s -> ByteString -> STM.STM ()
-        , onError :: m -> Connection m s -> ConnException -> STM.STM ()
-        , faultPolicy :: m -> Connection m s -> ReactOnFault
-        , handleConnect :: m -> Addr m -> STM.STM s
+        , onMsgRec :: m -> Connection m -> ByteString -> STM.STM ()
+        , onError :: m -> Connection m -> ConnException -> STM.STM ()
+        , faultPolicy :: m -> Connection m -> ReactOnFault
+        , handleConnect :: m -> Addr m -> STM.STM (Priv m)
         }

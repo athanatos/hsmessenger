@@ -4,6 +4,12 @@ module Messenger ( Messenger
                  , start
                  , queueMessageEntity
                  , queueMessageConn
+                 , MConfig (MConfig)
+                 , transType
+                 , msgHandler
+                 , onError
+                 , handleConnect
+                 , faultPolicy
                  ) where
 
 import qualified Data.Serialize as DP
@@ -29,14 +35,15 @@ data Messenger t a =
 
 data MConfig t a = 
   MConfig { transType :: T.TransType
-          , msgHandler :: [Messenger t a -> T.Connection t () ->
+          , msgHandler :: [Messenger t a -> T.Connection t ->
                            a -> Maybe (STM ())]
-          , onError :: [Messenger t a -> T.Connection t () ->
+          , onError :: [Messenger t a -> T.Connection t ->
                         T.ConnException -> Maybe (STM ())]
-          , faultPolicy :: Messenger t a -> T.Connection t () -> T.ReactOnFault
+          , handleConnect :: Messenger t a -> T.Addr t -> STM (T.Priv t)
+          , faultPolicy :: Messenger t a -> T.Connection t -> T.ReactOnFault
           }
 
-makeMessenger :: (T.Transport t (), DP.Serialize a) =>
+makeMessenger :: (T.Transport t,  DP.Serialize a) =>
                  T.Addr t -> MConfig t a -> IO (Messenger t a)
 makeMessenger addr mconf = 
   let
@@ -64,22 +71,22 @@ makeMessenger addr mconf =
        T.onMsgRec = mActions,
        T.onError = eActions,
        T.faultPolicy = \t -> (faultPolicy mconf) $ Messenger { getTransport = t},
-       T.handleConnect = \_ _ -> return ()
+       T.handleConnect = \t -> (handleConnect mconf) $ Messenger { getTransport = t}
        }
      T.startTransport trans
      return $ Messenger { getTransport = trans }
 
-start :: (T.Transport t e, DP.Serialize a) => Messenger t a -> IO ()
+start :: (T.Transport t, DP.Serialize a) => Messenger t a -> IO ()
 start msgr = do
   T.startTransport (getTransport msgr)
 
-queueMessageEntity :: (T.Transport t (), DP.Serialize a) => 
+queueMessageEntity :: (T.Transport t, DP.Serialize a) => 
                       Messenger t a -> T.Addr t -> a -> IO ()
 queueMessageEntity msger entity msg = do
   T.queueMessageEntity (getTransport msger) entity (DP.encodeLazy msg)
 
-queueMessageConn :: (T.Transport t (), DP.Serialize a) =>
-                    Messenger t a -> T.Connection t () -> a -> IO ()
+queueMessageConn :: (T.Transport t, DP.Serialize a) =>
+                    Messenger t a -> T.Connection t -> a -> IO ()
 queueMessageConn messenger conn message =
   T.queueMessage (getTransport messenger) conn (DP.encodeLazy message)
 

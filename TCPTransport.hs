@@ -241,12 +241,13 @@ queueMessageEntity trans peer msg = do
 startTransport :: (Show s) => TCPTransport s -> IO ()
 startTransport trans = case ((T.transType . tInit) trans) of
   T.Client -> return ()
-  T.Server -> (forkIO $ accepter trans) >> return ()
+  T.Server -> accepter trans
 
 instance (Show s, DP.Serialize s) =>
-         T.Transport (TCPTransport s) s where
-  type Connection (TCPTransport s) s = TCPConnection s
+         T.Transport (TCPTransport s) where
+  type Connection (TCPTransport s) = TCPConnection s
   type Addr (TCPTransport s) = TCPAddr
+  type Priv (TCPTransport s) = s
   makeTransport = makeTransport
   startTransport = startTransport
   getConnection = getConnection

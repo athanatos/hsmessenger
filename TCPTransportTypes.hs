@@ -184,7 +184,7 @@ instance CE.Exception TCPLogicException
 data TCPTransport s =
   TCPTransport { selfAddr :: TCPAddr
                , openConns :: STM.TVar (M.Map TCPAddr (TCPConnection s))
-               , tInit :: T.TInit (TCPTransport s) s
+               , tInit :: T.TInit (TCPTransport s)
                }
 
 sockAddr :: TCPTransport s -> S.SockAddr
@@ -199,7 +199,7 @@ removeConnection trans addr = do
   return ()
 
 makeTransport :: TCPAddr ->
-                 T.TInit (TCPTransport s) s ->
+                 T.TInit (TCPTransport s) ->
                  IO (TCPTransport s)
 makeTransport addr tInit = do
   oConns <- STM.atomically $ STM.newTVar M.empty
