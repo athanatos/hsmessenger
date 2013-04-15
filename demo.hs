@@ -57,6 +57,7 @@ client self target port = do
               }
           ) :: IO (MSGR.Messenger (TCPT.TCPTransport ()) Msg)
   targetAddr <- TCPT.tcpEntityFromStrWPort target port
+  print (show targetAddr)
   MSGR.queueMessageEntity msgr targetAddr
     (Msg { msgNum = 0, msgContents = "Ping" } )
   forkIO $ cActR q var

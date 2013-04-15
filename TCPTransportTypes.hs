@@ -63,7 +63,8 @@ tcpEntityFromStrWPort str port = do
 
 tcpEntityFromStr :: String -> IO TCPAddr
 tcpEntityFromStr str = do
-  addrInfo:_ <- S.getAddrInfo Nothing (Just str) Nothing
+  addrInfo:rs <- S.getAddrInfo Nothing (Just str) Nothing
+  print (show addrInfo)
   return $ S.addrAddress addrInfo
 
 makeTuple :: TCPAddr ->
